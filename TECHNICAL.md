@@ -160,4 +160,5 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 26 集成测试
 - 2026-06-05: 加入调试面板（SwiftUI 3-Tab，覆盖原"无窗口"决策）
 - 2026-06-05: StateMachine 增加 `lastEvent` 输出，AppDelegate 把状态机事件写到 LogStore
 - 2026-06-05: 配置 Tab 加入"工作计时"实时显示（MM:SS / MM:SS + 进度条）
-- 2026-06-05: 图标改为 `circle.fill`（solid circle），pointSize 20，更显眼
+- 2026-06-05: 图标改为 `circle.fill`（solid circle），pointSize 20 → 16
+- 2026-06-05: 默认值和选项各 +1 分钟（30→31, 10→11, 选项 6/11/16/21/31/46/61）

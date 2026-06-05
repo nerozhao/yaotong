@@ -24,9 +24,9 @@ final class ConfigStoreTests: XCTestCase {
 
     // MARK: - Defaults
 
-    func testDefaultsAre30And10() {
-        XCTAssertEqual(store.workMinutes, 30)
-        XCTAssertEqual(store.restMinutes, 10)
+    func testDefaultsAre31And11() {
+        XCTAssertEqual(store.workMinutes, 31)
+        XCTAssertEqual(store.restMinutes, 11)
     }
 
     // MARK: - Allowed values
@@ -46,12 +46,12 @@ final class ConfigStoreTests: XCTestCase {
     // MARK: - Persistence
 
     func testSettingsPersistAcrossInstances() {
-        store.workMinutes = 45
-        store.restMinutes = 15
+        store.workMinutes = 46
+        store.restMinutes = 16
 
         let other = ConfigStore(defaults: defaults)
-        XCTAssertEqual(other.workMinutes, 45)
-        XCTAssertEqual(other.restMinutes, 15)
+        XCTAssertEqual(other.workMinutes, 46)
+        XCTAssertEqual(other.restMinutes, 16)
     }
 
     // MARK: - Pause

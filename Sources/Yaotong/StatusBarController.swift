@@ -151,11 +151,10 @@ final class StatusBarController: NSObject {
         return tinted
     }
 
-    /// Larger-than-default point size so the circle is easy to spot in the
-    /// crowded right-hand menu bar area. 20pt is a touch bigger than the
-    /// surrounding system icons (18pt).
+    /// Point size for the circle icon. Slightly smaller than the default
+    /// (18pt) so it doesn't dominate the menu bar.
     private static let iconConfig = NSImage.SymbolConfiguration(
-        pointSize: 20,
+        pointSize: 16,
         weight: .regular
     )
 
