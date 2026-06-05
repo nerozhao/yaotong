@@ -155,7 +155,7 @@ enum SmokeTest {
 
         // ---- §6.3: 修改工作时长后立即生效
         let originalWork = config.workMinutes
-        let newWork = originalWork == 46 ? 21 : 46
+        let newWork = originalWork == 45 ? 15 : 45
         config.workMinutes = newWork
         // AppDelegate wires this up via `config.onChange`; the smoke test
         // goes around AppDelegate so we have to rebuild the menu by hand.
@@ -189,16 +189,16 @@ enum SmokeTest {
         // Use values that are in the allowed options list — the store
         // snaps invalid values back to the default, which would mask any
         // persistence bug.
-        config.workMinutes = 21
-        config.restMinutes = 16
+        config.workMinutes = 20
+        config.restMinutes = 15
         let reloaded = ConfigStore(defaults: defaults)
         check(
             "restart: workMinutes persists",
-            reloaded.workMinutes == 21
+            reloaded.workMinutes == 20
         )
         check(
             "restart: restMinutes persists",
-            reloaded.restMinutes == 16
+            reloaded.restMinutes == 15
         )
 
         // ---- §6.3: "暂停 1 小时"后图标停止变化

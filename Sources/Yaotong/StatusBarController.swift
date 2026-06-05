@@ -151,10 +151,9 @@ final class StatusBarController: NSObject {
         return tinted
     }
 
-    /// Point size for the circle icon. Slightly smaller than the default
-    /// (18pt) so it doesn't dominate the menu bar.
+    /// Point size for the circle icon. Matches the macOS menu bar default.
     private static let iconConfig = NSImage.SymbolConfiguration(
-        pointSize: 16,
+        pointSize: 18,
         weight: .regular
     )
 

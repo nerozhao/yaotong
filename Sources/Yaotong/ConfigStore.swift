@@ -9,10 +9,13 @@ final class ConfigStore: ObservableObject {
 
     // MARK: - Defaults
 
-    static let defaultWorkMinutes = 31
-    static let defaultRestMinutes = 11
+    static let defaultWorkMinutes = 30
+    static let defaultRestMinutes = 10
 
-    static let allowedMinuteOptions: [Int] = [6, 11, 16, 21, 31, 46, 61]
+    /// 1 minute is included for fast testing (so you can watch the icon flip
+    /// without waiting half an hour). The rest of the list is the spec's
+    /// original set of "round" values.
+    static let allowedMinuteOptions: [Int] = [1, 5, 10, 15, 20, 30, 45, 60]
 
     static let pauseDuration: TimeInterval = 60 * 60  // 1 hour
 
