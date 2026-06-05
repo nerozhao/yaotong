@@ -170,26 +170,21 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertFalse(UpdatePrompt.shouldShow(.skipped(info("0.3.0")), source: .manual))
     }
 
-    // MARK: - Throttle
+    // MARK: - Persisted state
 
-    /// Throttling is the only state that lives across calls;
-    /// verify it survives a round-trip through UserDefaults so a
-    /// relaunch doesn't re-prompt.
-    func testStateRoundTrip() {
+    /// `skippedVersion` survives a round-trip through
+    /// `UserDefaults` so the "跳过该版本" choice persists
+    /// across launches.
+    func testSkippedVersionRoundTrip() {
         let suite = "test.yaotong.\(UUID().uuidString)"
         defer { UserDefaults().removePersistentDomain(forName: suite) }
         let defaults = UserDefaults(suiteName: suite)!
         let state = UpdateChecker.State(defaults: defaults)
 
-        XCTAssertNil(state.lastCheck)
         XCTAssertNil(state.skippedVersion)
 
-        let now = Date()
-        state.lastCheck = now
         state.skippedVersion = "0.3.0"
-
         let restored = UpdateChecker.State(defaults: defaults)
-        XCTAssertEqual(restored.lastCheck, now)
         XCTAssertEqual(restored.skippedVersion, "0.3.0")
     }
 }

@@ -35,19 +35,6 @@ struct UpdateChecker {
         URL(string: "https://api.github.com/repos/\(defaultRepo)/releases/latest")!
     }()
 
-    /// Throttle window — even a manual "check for updates" click
-    /// is ignored if we hit the API less than this many seconds
-    /// ago. 6 hours is the GitHub secondary rate-limit reset
-    /// window, so a misbehaving caller can't get us rate-limited.
-    static let manualThrottleSeconds: TimeInterval = 6 * 3600
-
-    /// Throttle window for the background check on launch. 24h
-    /// matches Sparkle's default `SUCheckAtLaunch`-equivalent
-    /// cadence and is short enough that a user who installs the
-    /// app and leaves it running will see new releases within a
-    /// day of publishing.
-    static let backgroundThrottleSeconds: TimeInterval = 24 * 3600
-
     // MARK: - Result
 
     /// What the user sees after a check. Drives the alert text and
@@ -65,8 +52,10 @@ struct UpdateChecker {
         case failed(String)
     }
 
-    /// What triggered the check. Drives the throttle window and
-    /// the prompt strategy in `UpdatePrompt.show(_:source:)`.
+    /// What triggered the check. Drives the prompt strategy
+    /// in `UpdatePrompt.show(_:source:)`: background checks
+    /// are silent on `upToDate` / `failed`, manual checks
+    /// surface every outcome.
     enum Source { case background, manual }
 
     /// Parsed release payload. `notes` is the markdown release
@@ -83,21 +72,18 @@ struct UpdateChecker {
 
     // MARK: - Storage
 
-    /// Persisted state — when we last checked, and which version
-    /// the user dismissed. Lives in a tiny `UserDefaults` wrapper
-    /// so tests can inject their own suite.
+    /// Persisted state — just the version the user dismissed.
+    /// We deliberately don't track `lastCheck` anymore: with
+    /// throttling gone there's no functional use for it.
+    /// Lives in a tiny `UserDefaults` wrapper so tests can
+    /// inject their own suite.
     final class State {
         private enum Key {
-            static let lastCheck = "yaotong.update.lastCheck"
             static let skippedVersion = "yaotong.update.skippedVersion"
         }
         private let defaults: UserDefaults
         init(defaults: UserDefaults = .standard) {
             self.defaults = defaults
-        }
-        var lastCheck: Date? {
-            get { defaults.object(forKey: Key.lastCheck) as? Date }
-            set { defaults.set(newValue, forKey: Key.lastCheck) }
         }
         var skippedVersion: String? {
             get { defaults.string(forKey: Key.skippedVersion) }
@@ -120,27 +106,14 @@ struct UpdateChecker {
         self.session = session
     }
 
-    /// Run a check. `source` chooses the throttle window — manual
-    /// menu clicks still respect `manualThrottleSeconds` so an
-    /// impatient user can't burn through the GitHub rate limit.
+    /// Run a check. Always hits the network — no throttling,
+    /// no cache. `source` is kept on the signature so the call
+    /// site at `AppDelegate.runUpdateCheck` is self-documenting.
     func check(source: Source, url: URL = UpdateChecker.defaultURL) async -> Result {
-        // Throttle: skip the network call entirely if we asked
-        // recently. For `manual`, the check is *allowed* if no
-        // previous check exists (first run) — only the time
-        // delta is checked.
-        let throttle = (source == .manual)
-            ? Self.manualThrottleSeconds
-            : Self.backgroundThrottleSeconds
-        if let last = state.lastCheck,
-           Date().timeIntervalSince(last) < throttle {
-            return .upToDate
-        }
-
         do {
             let (data, response) = try await fetch(url: url)
             try validate(response: response)
             let info = try Self.parseRelease(data)
-            state.lastCheck = Date()
             return Self.classify(info: info, currentVersion: currentVersion, skipped: state.skippedVersion)
         } catch let error as UpdateError {
             os_log("update check failed: %{public}@", log: log, type: .error, error.description)
