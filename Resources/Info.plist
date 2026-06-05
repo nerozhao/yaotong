@@ -22,6 +22,10 @@
     <true/>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <!-- YTBuildTime: ISO-8601 timestamp written by build.sh on every build.
+         Not a standard CFBundle key; consumed by AppVersion.buildTime. -->
+    <key>YTBuildTime</key>
+    <string>__YT_BUILD_TIME__</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>

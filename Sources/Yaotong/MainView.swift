@@ -40,7 +40,7 @@ struct MainView: View {
             }
             HStack {
                 Spacer()
-                Text("v\(AppVersion.display)")
+                Text(AppVersion.footer)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }

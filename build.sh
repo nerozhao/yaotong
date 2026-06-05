@@ -28,7 +28,13 @@ mkdir -p "${APP_DIR}/Contents/MacOS"
 mkdir -p "${APP_DIR}/Contents/Resources"
 
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
-cp Resources/Info.plist "${APP_DIR}/Contents/Info.plist"
+
+# Stamp the build time into the bundle's Info.plist. Read the source plist,
+# substitute the placeholder, and write to the bundle so the running app
+# can show "v0.2.0 (2) — built 2026-06-05 14:32" in its footer.
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sed "s|__YT_BUILD_TIME__|${BUILD_TIME}|g" \
+    Resources/Info.plist > "${APP_DIR}/Contents/Info.plist"
 
 # Generate the Dock icon and drop it into Resources. The Swift script
 # is idempotent — running it twice produces a byte-identical PNG — so
