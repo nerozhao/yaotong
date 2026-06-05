@@ -9,18 +9,19 @@ final class StatusBarController: NSObject {
     /// Update the icon to reflect the supplied state. Called once per second
     /// by the app's tick loop.
     func setState(_ state: StatusState) {
-        // We always keep the same SF Symbol; only the tint changes.
-        let image = StatusBarController.makeIcon()
         switch state {
         case .working:
-            // Default system label color (appears white on the dark menu bar).
-            image.isTemplate = true
-            statusItem.button?.contentTintColor = nil
+            // Template image = system label color (white on the dark menu bar).
+            // `contentTintColor` on `NSStatusItem.button` does NOT actually
+            // tint SF Symbols — only the template flag does.
+            statusItem.button?.image = StatusBarController.workingIcon()
         case .overtime:
-            image.isTemplate = false
-            statusItem.button?.contentTintColor = .systemRed
+            // Bake the red color into the SF Symbol via a palette
+            // configuration. `contentTintColor` on a non-template image would
+            // also work in theory, but on macOS status items it has been
+            // observed to be ignored, so we render the tinted image directly.
+            statusItem.button?.image = StatusBarController.overtimeIcon()
         }
-        statusItem.button?.image = image
         statusItem.button?.imagePosition = .imageOnly
     }
 
@@ -78,6 +79,19 @@ final class StatusBarController: NSObject {
 
         menu.addItem(.separator())
 
+        // Debug panel
+        if debugWindow != nil {
+            let debugItem = NSMenuItem(
+                title: "🪟 打开调试面板",
+                action: #selector(openDebugPanel(_:)),
+                keyEquivalent: "d"
+            )
+            debugItem.target = self
+            menu.addItem(debugItem)
+        }
+
+        menu.addItem(.separator())
+
         // Quit
         let quitItem = NSMenuItem(
             title: "退出 腰痛",
@@ -93,10 +107,12 @@ final class StatusBarController: NSObject {
     // MARK: - Init
 
     private let config: ConfigStore
+    private let debugWindow: DebugWindowController?
     let statusItem: NSStatusItem
 
-    init(config: ConfigStore) {
+    init(config: ConfigStore, debugWindow: DebugWindowController? = nil) {
         self.config = config
+        self.debugWindow = debugWindow
         // Icon-only items use `squareLength`; `variableLength` collapses to
         // zero width when there's no text content.
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -107,13 +123,27 @@ final class StatusBarController: NSObject {
 
     // MARK: - Private helpers
 
-    private static func makeIcon() -> NSImage {
-        // `figure.stand` reads as "person standing up" — fits the app's purpose
-        // of reminding the user to stand up and move.
-        // We let AppKit pick the default menu-bar point size, which keeps the
-        // icon visually consistent with neighbouring system status items.
-        return NSImage(systemSymbolName: "figure.stand", accessibilityDescription: "腰痛")
+    private static let symbolName = "figure.stand"
+
+    /// Working-state icon: template, system label color (white on dark menu bar).
+    private static func workingIcon() -> NSImage {
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "腰痛")
             ?? NSImage()
+        image.isTemplate = true
+        return image
+    }
+
+    /// Overtime-state icon: red, baked into the image via a palette config.
+    /// `applyingSymbolConfiguration(.paletteColors)` is the only reliable way
+    /// to color an SF Symbol on a macOS status item — `contentTintColor` on
+    /// the button is not honored.
+    private static func overtimeIcon() -> NSImage {
+        let base = NSImage(systemSymbolName: symbolName, accessibilityDescription: "腰痛")
+            ?? NSImage()
+        let colorConfig = NSImage.SymbolConfiguration(paletteColors: [.systemRed])
+        let tinted = base.withSymbolConfiguration(colorConfig) ?? base
+        tinted.isTemplate = false
+        return tinted
     }
 
     private func makeDurationSubmenu(
@@ -149,6 +179,10 @@ final class StatusBarController: NSObject {
 
     @objc private func quitApp(_ sender: NSMenuItem) {
         NSApp.terminate(nil)
+    }
+
+    @objc private func openDebugPanel(_ sender: NSMenuItem) {
+        debugWindow?.open()
     }
 
     // MARK: - Private types

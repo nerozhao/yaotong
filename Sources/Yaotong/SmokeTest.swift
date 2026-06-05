@@ -10,6 +10,7 @@ import AppKit
 /// is launched with `--smoke-test`.
 enum SmokeTest {
 
+    @MainActor
     static func run(then completion: @escaping () -> Void) {
         // .app bundles discard stdout, so write the report to a file the
         // caller can read after the process exits. Path comes from the
@@ -49,7 +50,10 @@ enum SmokeTest {
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let config = ConfigStore(defaults: defaults)
-        let controller = StatusBarController(config: config)
+        let logStore = LogStore()
+        let appState = AppState()
+        let debugWindow = DebugWindowController(config: config, logStore: logStore, appState: appState)
+        let controller = StatusBarController(config: config, debugWindow: debugWindow)
 
         emit("=== 腰痛 smoke test ===")
 
@@ -61,6 +65,10 @@ enum SmokeTest {
         check(
             "first launch: menu is built and has the expected items",
             (controller.statusItem.menu?.items.count ?? 0) >= 4
+        )
+        check(
+            "first launch: debug panel menu item present",
+            (controller.statusItem.menu?.items ?? []).contains(where: { $0.title.contains("调试面板") })
         )
 
         // ---- §6.3: 持续使用 30 分钟后图标变红
@@ -88,9 +96,14 @@ enum SmokeTest {
             controller.statusItem.button?.image?.isTemplate == false
         )
         check(
-            "30 min continuous work: icon has an explicit red tint",
-            controller.statusItem.button?.contentTintColor != nil
+            "30 min continuous work: icon pixels are actually red (not black)",
+            SmokeTest.dominantRedness(of: controller.statusItem.button?.image) > 0.3,
+            "got \(SmokeTest.dominantRedness(of: controller.statusItem.button?.image))"
         )
+        // Dump the overtime icon to a PNG so the user can confirm visually.
+        if let png = controller.statusItem.button?.image?.pngData() {
+            try? png.write(to: URL(fileURLWithPath: "/tmp/yaotong-overtime-icon.png"))
+        }
 
         // ---- §6.3: 离开座位 10 分钟后回到工位，图标恢复白色
         let returnTick = sm.tick(
@@ -108,9 +121,12 @@ enum SmokeTest {
             controller.statusItem.button?.image?.isTemplate == true
         )
         check(
-            "10 min away then return: icon no longer has explicit tint",
-            controller.statusItem.button?.contentTintColor == nil
+            "10 min away then return: icon pixels are NOT red (back to template)",
+            SmokeTest.dominantRedness(of: controller.statusItem.button?.image) < 0.1
         )
+        if let png = controller.statusItem.button?.image?.pngData() {
+            try? png.write(to: URL(fileURLWithPath: "/tmp/yaotong-working-icon.png"))
+        }
 
         // ---- §6.3: 点击图标弹出配置菜单 (menu is built, items present)
         controller.rebuildMenu()
@@ -230,6 +246,36 @@ enum SmokeTest {
             controller.statusItem.button != nil
         )
 
+        // ---- Debug panel: forcing icon state via AppState changes the icon
+        appState.setForcedState(.overtime)
+        controller.setState(.overtime)
+        check(
+            "debug: forcing .overtime still produces a red icon",
+            SmokeTest.dominantRedness(of: controller.statusItem.button?.image) > 0.3
+        )
+        appState.setForcedState(.working)
+        controller.setState(.working)
+        check(
+            "debug: forcing .working produces a non-red icon",
+            SmokeTest.dominantRedness(of: controller.statusItem.button?.image) < 0.1
+        )
+
+        // ---- Debug panel: LogStore buffers messages
+        logStore.log("smoke test entry 1")
+        logStore.log("smoke test entry 2", level: .warn)
+        // log() is async via a writer queue → main-queue publish. We can't
+        // `Thread.sleep` here — that would block the main run loop and
+        // starve the dispatch. Pump the run loop until the entries land.
+        let deadline = Date().addingTimeInterval(2.0)
+        while logStore.entries.count < 2 && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        check("debug: LogStore has both entries", logStore.entries.count == 2)
+        check(
+            "debug: LogStore preserved the level",
+            logStore.entries.contains(where: { $0.level == .warn })
+        )
+
         emit("=== \(passed) passed, \(failed) failed ===")
 
         // Persist the report to the file the caller specified (or
@@ -252,4 +298,44 @@ enum SmokeTest {
     /// Captured by `AppDelegate.cleanupAndExit` so it can propagate the
     /// smoke-test result as the process's exit code.
     static var lastExitCode: Int32 = 0
+
+    // MARK: - Image inspection
+
+    /// Returns a 0…1 estimate of how "red" the given image is. We sample the
+    /// pixel data of the first bitmap representation and compute the fraction
+    /// of opaque pixels where R dominates G and B. Used to verify the
+    /// overtime icon's tint actually rendered (rather than just inspecting
+    /// the template flag, which `contentTintColor` mishandles).
+    static func dominantRedness(of image: NSImage?) -> Double {
+        guard let image,
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return 0 }
+        let width = rep.pixelsWide
+        let height = rep.pixelsHigh
+        guard width > 0, height > 0 else { return 0 }
+        var redCount = 0
+        var opaqueCount = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                guard let c = rep.colorAt(x: x, y: y) else { continue }
+                let (r, g, b, a) = (c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent)
+                if a < 0.1 { continue }
+                opaqueCount += 1
+                if r > 0.5 && r > g + 0.15 && r > b + 0.15 {
+                    redCount += 1
+                }
+            }
+        }
+        return opaqueCount == 0 ? 0 : Double(redCount) / Double(opaqueCount)
+    }
+}
+
+extension NSImage {
+    /// Encode to PNG bytes. Returns nil if the image has no raster rep.
+    func pngData() -> Data? {
+        guard let tiff = tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let data = rep.representation(using: .png, properties: [:]) else { return nil }
+        return data
+    }
 }

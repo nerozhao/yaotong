@@ -1,10 +1,11 @@
 import Foundation
+import Combine
 
 /// User-facing, persisted settings for the 腰痛 app.
 ///
-/// Wraps UserDefaults. All changes are observed via `onChange` so the status bar
-/// controller can rebuild its menu immediately.
-final class ConfigStore {
+/// Wraps UserDefaults. All changes are observed via `onChange` (legacy
+/// callback) and `@Published` properties (SwiftUI binding target).
+final class ConfigStore: ObservableObject {
 
     // MARK: - Defaults
 
@@ -27,6 +28,10 @@ final class ConfigStore {
 
     private let defaults: UserDefaults
     private let suiteName: String?
+
+    /// Last assignment to `workMinutes` / `restMinutes` / `pauseUntil`. Bumped
+    /// on every change so SwiftUI views bound to the store can re-read.
+    @Published private(set) var revision: Int = 0
 
     /// Fired whenever any setting changes. Receives the new ConfigStore.
     var onChange: ((ConfigStore) -> Void)?
@@ -54,6 +59,7 @@ final class ConfigStore {
         set {
             let value = Self.allowedMinuteOptions.contains(newValue) ? newValue : Self.defaultWorkMinutes
             defaults.set(value, forKey: Key.workMinutes)
+            revision += 1
             onChange?(self)
         }
     }
@@ -66,6 +72,7 @@ final class ConfigStore {
         set {
             let value = Self.allowedMinuteOptions.contains(newValue) ? newValue : Self.defaultRestMinutes
             defaults.set(value, forKey: Key.restMinutes)
+            revision += 1
             onChange?(self)
         }
     }
@@ -84,6 +91,7 @@ final class ConfigStore {
             } else {
                 defaults.removeObject(forKey: Key.pauseUntil)
             }
+            revision += 1
             onChange?(self)
         }
     }
