@@ -21,17 +21,11 @@ final class ConfigStore: ObservableObject {
     /// quickly test the "rest" path without waiting 10 minutes.
     static let allowedRestMinuteOptions: [Int] = [1, 5, 10, 15, 20, 30, 45, 60]
 
-    /// Back-compat alias used by older tests / callers.
-    static var allowedMinuteOptions: [Int] { allowedRestMinuteOptions }
-
-    static let pauseDuration: TimeInterval = 60 * 60  // 1 hour
-
     // MARK: - Keys
 
     private enum Key {
         static let workMinutes = "yaotong.workMinutes"
         static let restMinutes = "yaotong.restMinutes"
-        static let pauseUntil = "yaotong.pauseUntil"
     }
 
     // MARK: - Storage
@@ -39,11 +33,12 @@ final class ConfigStore: ObservableObject {
     private let defaults: UserDefaults
     private let suiteName: String?
 
-    /// Last assignment to `workMinutes` / `restMinutes` / `pauseUntil`. Bumped
-    /// on every change so SwiftUI views bound to the store can re-read.
+    /// Last assignment to `workMinutes` / `restMinutes`. Bumped
+    /// on every change so SwiftUI views bound to the store can
+    /// re-read.
     @Published private(set) var revision: Int = 0
 
-    /// Fired whenever any setting changes. Receives the new ConfigStore.
+    /// Fired whenever a setting changes. Receives the new ConfigStore.
     var onChange: ((ConfigStore) -> Void)?
 
     init(defaults: UserDefaults = .standard, suiteName: String? = nil) {
@@ -90,38 +85,31 @@ final class ConfigStore: ObservableObject {
     var workThreshold: TimeInterval { TimeInterval(workMinutes * 60) }
     var restThreshold: TimeInterval { TimeInterval(restMinutes * 60) }
 
-    // MARK: - Pause
+    // MARK: - Pause (manual toggle, in-memory only)
 
-    /// Wall-clock time at which the pause ends. `nil` if not paused.
-    var pauseUntil: Date? {
-        get { defaults.object(forKey: Key.pauseUntil) as? Date }
+    /// True while the user has manually paused the monitor. A pure
+    /// toggle — no time limit, no auto-resume.
+    ///
+    /// **Not persisted**: every app launch starts with `isPaused = false`
+    /// (i.e. running). The pause state is for the current session only;
+    /// we don't want yesterday's "I paused for a meeting" to still be
+    /// active when the user starts the app today.
+    var isPaused: Bool {
+        get { _runtimeIsPaused }
         set {
-            if let newValue {
-                defaults.set(newValue, forKey: Key.pauseUntil)
-            } else {
-                defaults.removeObject(forKey: Key.pauseUntil)
-            }
+            _runtimeIsPaused = newValue
             revision += 1
             onChange?(self)
         }
     }
 
-    /// Returns `true` if the user is currently paused and the pause window
-    /// has not yet expired.
-    func isPaused(now: Date = Date()) -> Bool {
-        guard let until = pauseUntil else { return false }
-        return now < until
-    }
+    /// In-memory pause flag. Never written to UserDefaults.
+    private var _runtimeIsPaused: Bool = false
 
-    /// Toggle to start or end a pause. Returns the new pause state.
+    /// Flip the pause state. Returns the new value.
     @discardableResult
-    func togglePause(now: Date = Date()) -> Bool {
-        if isPaused(now: now) {
-            pauseUntil = nil
-            return false
-        } else {
-            pauseUntil = now.addingTimeInterval(Self.pauseDuration)
-            return true
-        }
+    func togglePause() -> Bool {
+        isPaused.toggle()
+        return isPaused
     }
 }

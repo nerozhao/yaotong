@@ -60,20 +60,24 @@ final class ConfigStoreTests: XCTestCase {
 
     // MARK: - Pause
 
-    func testPauseSetsFutureDate() {
-        XCTAssertFalse(store.isPaused())
-        let now = Date()
-        store.pauseUntil = now.addingTimeInterval(60 * 60)
-        XCTAssertTrue(store.isPaused(now: now))
-        XCTAssertFalse(store.isPaused(now: now.addingTimeInterval(2 * 60 * 60)))
+    func testPauseIsOffByDefault() {
+        XCTAssertFalse(store.isPaused)
     }
 
     func testTogglePause() {
-        let now = Date()
-        XCTAssertTrue(store.togglePause(now: now), "first toggle should activate pause")
-        XCTAssertTrue(store.isPaused(now: now))
-        XCTAssertFalse(store.togglePause(now: now), "second toggle should clear pause")
-        XCTAssertFalse(store.isPaused(now: now))
+        XCTAssertTrue(store.togglePause(), "first toggle should activate pause")
+        XCTAssertTrue(store.isPaused)
+        XCTAssertFalse(store.togglePause(), "second toggle should clear pause")
+        XCTAssertFalse(store.isPaused)
+    }
+
+    func testPauseDoesNotPersistAcrossInstances() {
+        store.isPaused = true
+        let other = ConfigStore(defaults: defaults)
+        XCTAssertFalse(
+            other.isPaused,
+            "every launch should start running (isPaused = false) — no stale pause from yesterday"
+        )
     }
 
     // MARK: - Callbacks

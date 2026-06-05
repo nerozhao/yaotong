@@ -1,83 +1,105 @@
 import Foundation
 import CoreGraphics
-import os.log
 
 /// A single activity event detected by the monitor.
 struct ActivityEvent: Equatable {
     enum Kind: String {
-        case mouseClick = "鼠标点击"
-        case mouseMove  = "鼠标移动"
-        case keyPress   = "键盘按键"
-        case scroll     = "滚轮滚动"
-        case tablet     = "触摸板"
-        case other      = "其他输入"
+        case mouseClick  = "鼠标点击"
+        case mouseDrag   = "鼠标拖拽"
+        case mouseMove   = "鼠标移动"
+        case keyPress    = "键盘按键"
+        case modifierKey = "修饰键"
+        case systemKey   = "系统键"
+        case scroll      = "滚轮滚动"
+        case tablet      = "触摸板"
+        case other       = "其他输入"
     }
     let kind: Kind
 }
 
-/// Thin wrapper around `CGEventSource.secondsSinceLastEventType` so the
-/// state machine and tests can both depend on a small protocol rather
-/// than the C API directly. Also detects *what kind* of activity just
-/// happened (mouse / keyboard / scroll / etc.) by comparing the seconds-
-/// since reading across several event types between calls.
-protocol ActivityProviding {
-    /// Seconds since the last input event of any kind.
-    func secondsSinceLastInput() -> TimeInterval
-
-    /// If a new input event has happened since the previous call, return
-    /// a description of its kind. Returns `nil` when nothing changed.
-    /// Implementations are expected to be called once per tick.
-    func latestActivity() -> ActivityEvent?
-}
-
-/// Real implementation backed by `CGEventSource`.
-final class SystemActivityMonitor: ActivityProviding {
+/// Thin wrapper around `CGEventSource.secondsSinceLastEventType`.
+///
+/// The state machine only needs the "any input" idle reading. The
+/// per-type readings are queried **only** when an event is actually
+/// detected, so the steady-state cost is one `CGEventSource` call
+/// per tick instead of twelve.
+final class SystemActivityMonitor {
 
     /// `kCGAnyInputEventType` (0xFFFFFFFF) — the "any input" sentinel.
     /// Not exposed as a Swift enum case, so we build it from the raw value.
     private static let anyInputEventType = CGEventType(rawValue: 0xFFFFFFFF)!
 
-    /// (eventType, kind) pairs to compare between calls. Order is
-    /// significant when several kinds change in the same tick — we
-    /// report the first one we see.
+    /// Order matters: when several kinds fire in the same tick we
+    /// report the first one we see. More specific intents (clicks,
+    /// drags, key presses, modifier / system keys) come before
+    /// ambient movement (mouse move, tablet pointer) so a click
+    /// during continuous mouse motion is reported as a click.
+    ///
+    /// `flagsChanged` is what fires for Shift / Ctrl / Opt / Cmd /
+    /// Caps Lock — not `keyDown`. Without it, modifier-only activity
+    /// falls through to `.other`. Same for `systemDefined`, which
+    /// covers media / brightness / volume keys.
     private static let trackedTypes: [(CGEventType, ActivityEvent.Kind)] = [
-        (.leftMouseDown,  .mouseClick),
-        (.rightMouseDown, .mouseClick),
-        (.otherMouseDown, .mouseClick),
-        (.mouseMoved,     .mouseMove),
-        (.keyDown,        .keyPress),
-        (.scrollWheel,    .scroll),
-        (.tabletPointer,  .tablet),
+        (.leftMouseDown,      .mouseClick),
+        (.rightMouseDown,     .mouseClick),
+        (.otherMouseDown,     .mouseClick),
+        (.leftMouseDragged,   .mouseDrag),
+        (.rightMouseDragged,  .mouseDrag),
+        (.otherMouseDragged,  .mouseDrag),
+        (.keyDown,            .keyPress),
+        (.flagsChanged,       .modifierKey),
+        // `kCGEventSystemDefined` (raw 14) — media / brightness / volume.
+        (CGEventType(rawValue: 14)!, .systemKey),
+        (.scrollWheel,        .scroll),
+        (.mouseMoved,         .mouseMove),
+        (.tabletPointer,      .tablet),
     ]
 
-    /// Last-seen "seconds since" value for each tracked event type.
+    /// A per-type reading below this means the type fired in the
+    /// latter half of the previous tick window. Tuned for a 1Hz
+    /// tick loop — 0.5s catches events from "just now" up to half a
+    /// second ago, while still rejecting ambient noise (idle for
+    /// several seconds).
+    private static let eventThreshold: TimeInterval = 0.5
+
+    /// "Seconds since any input" reading from the previous tick.
+    /// A decrease between ticks is the signal that *something* happened.
     /// `nil` on the first call so we don't fire a spurious event for
     /// pre-existing history.
-    private var lastSeen: [CGEventType: TimeInterval] = [:]
+    private var lastAny: TimeInterval?
 
-    func secondsSinceLastInput() -> TimeInterval {
-        let seconds = CGEventSource.secondsSinceLastEventType(
+    /// Sample the system. Call exactly once per tick.
+    /// - Returns: `idleSeconds` (for the state machine) and an optional
+    ///   `event` (for logging). The event is only non-nil on ticks where
+    ///   an input was actually detected.
+    @discardableResult
+    func sample() -> (idleSeconds: TimeInterval, event: ActivityEvent?) {
+        let current = CGEventSource.secondsSinceLastEventType(
             .combinedSessionState,
             eventType: Self.anyInputEventType
         )
-        return max(0, seconds)
+        let event = detectEvent(currentIdle: current)
+        lastAny = current
+        return (max(0, current), event)
     }
 
-    func latestActivity() -> ActivityEvent? {
-        var detected: ActivityEvent?
+    /// Returns a non-nil `ActivityEvent` only when the "any input"
+    /// reading just decreased. Then (and only then) we pay the
+    /// per-type queries to identify the kind. A reading below the
+    /// threshold for a specific type means that type just happened.
+    private func detectEvent(currentIdle: TimeInterval) -> ActivityEvent? {
+        guard let prev = lastAny, currentIdle + 0.01 < prev else {
+            return nil
+        }
         for (type, kind) in Self.trackedTypes {
-            let current = CGEventSource.secondsSinceLastEventType(
+            let c = CGEventSource.secondsSinceLastEventType(
                 .combinedSessionState,
                 eventType: type
             )
-            // A decrease means an event of this type happened between the
-            // previous call and now. We require a small drop to ignore
-            // floating-point noise (events landing on the same tick).
-            if let prev = lastSeen[type], current + 0.01 < prev {
-                if detected == nil { detected = ActivityEvent(kind: kind) }
+            if c < Self.eventThreshold {
+                return ActivityEvent(kind: kind)
             }
-            lastSeen[type] = current
         }
-        return detected
+        return ActivityEvent(kind: .other)
     }
 }

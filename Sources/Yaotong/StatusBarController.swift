@@ -7,22 +7,11 @@ final class StatusBarController: NSObject {
     // MARK: - Public
 
     /// Update the icon to reflect the supplied state. Called once per second
-    /// by the app's tick loop.
+    /// by the app's tick loop. Looks like a setter but it just swaps the
+    /// cached `NSImage` — no work to do on the common (no-change) path
+    /// beyond the pointer swap.
     func setState(_ state: StatusState) {
-        switch state {
-        case .working:
-            // Template image = system label color (white on the dark menu bar).
-            // `contentTintColor` on `NSStatusItem.button` does NOT actually
-            // tint SF Symbols — only the template flag does.
-            statusItem.button?.image = StatusBarController.workingIcon()
-        case .overtime:
-            // Bake the red color into the SF Symbol via a palette
-            // configuration. `contentTintColor` on a non-template image would
-            // also work in theory, but on macOS status items it has been
-            // observed to be ignored, so we render the tinted image directly.
-            statusItem.button?.image = StatusBarController.overtimeIcon()
-        }
-        statusItem.button?.imagePosition = .imageOnly
+        statusItem.button?.image = (state == .overtime) ? overtimeImage : workingImage
     }
 
     func rebuildMenu() {
@@ -73,16 +62,8 @@ final class StatusBarController: NSObject {
 
         menu.addItem(.separator())
 
-        // Pause / resume
-        let isPaused = config.isPaused()
-        let pauseTitle: String
-        if isPaused, let until = config.pauseUntil {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm"
-            pauseTitle = "▶ 取消暂停（至 \(formatter.string(from: until))）"
-        } else {
-            pauseTitle = "⏸ 暂停 1 小时"
-        }
+        // Pause / resume (pure toggle, no auto-resume)
+        let pauseTitle = config.isPaused ? "▶ 开始腰痛" : "⏸ 暂停腰痛"
         let pauseItem = NSMenuItem(
             title: pauseTitle,
             action: #selector(togglePause(_:)),
@@ -92,6 +73,15 @@ final class StatusBarController: NSObject {
         menu.addItem(pauseItem)
 
         menu.addItem(.separator())
+
+        // Restart
+        let restartItem = NSMenuItem(
+            title: "🔄 重启 腰痛",
+            action: #selector(restartApp(_:)),
+            keyEquivalent: ""
+        )
+        restartItem.target = self
+        menu.addItem(restartItem)
 
         // Quit
         let quitItem = NSMenuItem(
@@ -109,28 +99,46 @@ final class StatusBarController: NSObject {
 
     private let config: ConfigStore
     private let mainWindow: MainWindowController?
+    private let onRestart: () -> Void
     let statusItem: NSStatusItem
 
+    /// Cached SF Symbol images, built once. The old code rebuilt them
+    /// every tick — roughly 3 600 NSImage allocations per hour — even
+    /// though the state almost never changes.
+    private let workingImage: NSImage
+    private let overtimeImage: NSImage
+
     init(config: ConfigStore,
-         mainWindow: MainWindowController? = nil) {
+         mainWindow: MainWindowController? = nil,
+         onRestart: @escaping () -> Void = {}) {
         self.config = config
         self.mainWindow = mainWindow
+        self.onRestart = onRestart
         // Icon-only items use `squareLength`; `variableLength` collapses to
         // zero width when there's no text content.
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        self.workingImage = StatusBarController.makeWorkingIcon()
+        self.overtimeImage = StatusBarController.makeOvertimeIcon()
         super.init()
+        statusItem.button?.imagePosition = .imageOnly
         rebuildMenu()
         setState(.working)
     }
 
     // MARK: - Private helpers
 
-    /// The simplest possible icon: a solid filled circle. Its color
-    /// (white / red) is the only signal the user gets.
+    /// SF Symbol name for the menu-bar icon. The color (white / red) is
+    /// the only signal the user gets.
     private static let symbolName = "circle.fill"
 
+    /// Point size for the circle icon. Matches the macOS menu bar default.
+    private static let iconConfig = NSImage.SymbolConfiguration(
+        pointSize: 18,
+        weight: .regular
+    )
+
     /// Working-state icon: template, system label color (white on dark menu bar).
-    private static func workingIcon() -> NSImage {
+    private static func makeWorkingIcon() -> NSImage {
         let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "腰痛")
             ?? NSImage()
         let sized = image.withSymbolConfiguration(Self.iconConfig) ?? image
@@ -139,10 +147,9 @@ final class StatusBarController: NSObject {
     }
 
     /// Overtime-state icon: red, baked into the image via a palette config.
-    /// `applyingSymbolConfiguration(.paletteColors)` is the only reliable way
-    /// to color an SF Symbol on a macOS status item — `contentTintColor` on
-    /// the button is not honored.
-    private static func overtimeIcon() -> NSImage {
+    /// `contentTintColor` on the status-item button is not honored for
+    /// SF Symbols, so the color has to be in the image itself.
+    private static func makeOvertimeIcon() -> NSImage {
         let base = NSImage(systemSymbolName: symbolName, accessibilityDescription: "腰痛")
             ?? NSImage()
         let combined = Self.iconConfig.applying(
@@ -152,12 +159,6 @@ final class StatusBarController: NSObject {
         tinted.isTemplate = false
         return tinted
     }
-
-    /// Point size for the circle icon. Matches the macOS menu bar default.
-    private static let iconConfig = NSImage.SymbolConfiguration(
-        pointSize: 18,
-        weight: .regular
-    )
 
     private func makeDurationSubmenu(
         options: [Int],
@@ -193,6 +194,10 @@ final class StatusBarController: NSObject {
 
     @objc private func quitApp(_ sender: NSMenuItem) {
         NSApp.terminate(nil)
+    }
+
+    @objc private func restartApp(_ sender: NSMenuItem) {
+        onRestart()
     }
 
     @objc private func showMainWindow(_ sender: NSMenuItem) {

@@ -11,63 +11,30 @@ struct MainView: View {
     @ObservedObject var appState: AppState
 
     private let onQuit: () -> Void
+    private let onRestart: () -> Void
 
     init(config: ConfigStore,
          appState: AppState,
-         onQuit: @escaping () -> Void = {}) {
+         onQuit: @escaping () -> Void = {},
+         onRestart: @escaping () -> Void = {}) {
         self.config = config
         self.appState = appState
         self.onQuit = onQuit
+        self.onRestart = onRestart
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            // ---- 工作计时（主视觉，在上）
             workSection
-
             Divider()
-
-            // ---- 休息计时
             restSection
-
             Divider()
-
-            // ---- 设置
-            Form {
-                Section("工作时长") {
-                    Picker("", selection: $config.workMinutes) {
-                        ForEach(ConfigStore.allowedWorkMinuteOptions, id: \.self) { m in
-                            Text("\(m) 分钟").tag(m)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                Section("休息时长") {
-                    Picker("", selection: $config.restMinutes) {
-                        ForEach(ConfigStore.allowedRestMinuteOptions, id: \.self) { m in
-                            Text("\(m) 分钟").tag(m)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                Section("暂停") {
-                    if config.isPaused(), let until = config.pauseUntil {
-                        Text("暂停中，恢复时间：\(formatHHmm(until))")
-                        Button("取消暂停") {
-                            config.pauseUntil = nil
-                        }
-                    } else {
-                        Text("未暂停")
-                        Button("暂停 1 小时") {
-                            config.pauseUntil = Date().addingTimeInterval(ConfigStore.pauseDuration)
-                        }
-                    }
-                }
-            }
-
-            // ---- 退出
+            settingsSection
+            Divider()
+            pauseSection
             HStack {
                 Spacer()
+                Button("重启 腰痛") { onRestart() }
                 Button("退出 腰痛", role: .destructive) { onQuit() }
                     .keyboardShortcut("q", modifiers: .command)
             }
@@ -154,6 +121,49 @@ struct MainView: View {
         }
     }
 
+    // MARK: - Settings
+
+    private var settingsSection: some View {
+        Form {
+            Section("工作时长") {
+                Picker("", selection: $config.workMinutes) {
+                    ForEach(ConfigStore.allowedWorkMinuteOptions, id: \.self) { m in
+                        Text("\(m) 分钟").tag(m)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            Section("休息时长") {
+                Picker("", selection: $config.restMinutes) {
+                    ForEach(ConfigStore.allowedRestMinuteOptions, id: \.self) { m in
+                        Text("\(m) 分钟").tag(m)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+        }
+    }
+
+    // MARK: - Pause section
+
+    private var pauseSection: some View {
+        let running = !config.isPaused
+        return GroupBox {
+            HStack {
+                Text(running ? "运行中" : "已暂停")
+                    .font(.headline)
+                Spacer()
+                Button(running ? "暂停腰痛" : "开始腰痛") {
+                    config.togglePause()
+                }
+            }
+            .padding(8)
+        } label: {
+            Label("状态", systemImage: "power")
+                .font(.headline)
+        }
+    }
+
     // MARK: - Formatting
 
     private func formatMMSS(_ seconds: TimeInterval) -> String {
@@ -161,11 +171,5 @@ struct MainView: View {
         let m = total / 60
         let s = total % 60
         return String(format: "%02d:%02d", m, s)
-    }
-
-    private func formatHHmm(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm"
-        return f.string(from: date)
     }
 }

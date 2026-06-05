@@ -25,12 +25,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let appState = AppState()
     private var mainWindow: MainWindowController!
 
-    /// Last computed state — used to detect transitions.
-    private var lastState: StatusState = .working
-
     /// System log for activity detection — viewable in Console.app or via
     /// `log show --predicate 'subsystem == "local.yaotong"'`.
     private let activityLog = OSLog(subsystem: "local.yaotong", category: "activity")
+
+    /// Wall-clock time of the last activity-kind log. The detector
+    /// fires on every input event, but a one-liner per five seconds
+    /// is plenty for confirming the subsystem is alive.
+    private var lastActivityLog: Date = .distantPast
+    private static let activityLogInterval: TimeInterval = 5
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Smoke-test mode: drive the §6.3 scenarios headlessly and exit.
@@ -53,11 +56,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         mainWindow = MainWindowController(
             config: config,
-            appState: appState
+            appState: appState,
+            onRestart: { [weak self] in
+                self?.restartApp()
+            }
         )
         statusBar = StatusBarController(
             config: config,
-            mainWindow: mainWindow
+            mainWindow: mainWindow,
+            onRestart: { [weak self] in
+                self?.restartApp()
+            }
         )
 
         // Rebuild state machine + menu when the user changes a setting.
@@ -86,6 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.tick()
             }
         }
+        // 100 ms tolerance lets the system coalesce wakeups with other
+        // 1-second timers on the device — visible power win on laptops.
+        timer.tolerance = 0.1
         RunLoop.main.add(timer, forMode: .common)
         tickTimer = timer
         MainActor.assumeIsolated { tick() }
@@ -93,9 +105,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func tick() {
         let now = Date()
-        let idle = activity.secondsSinceLastInput()
-        let paused = config.isPaused(now: now)
-        let computed = stateMachine.tick(now: now, idleSeconds: idle, isPaused: paused)
+        let (idle, activityEvent) = activity.sample()
+        let computed = stateMachine.tick(
+            now: now,
+            idleSeconds: idle,
+            isPaused: config.isPaused
+        )
 
         // Publish the live timer values to the UI.
         appState.workDurationSeconds = stateMachine.workTime
@@ -104,13 +119,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.restThresholdSeconds = TimeInterval(config.restMinutes * 60)
 
         statusBar.setState(computed)
-        _ = lastState
 
-        // Log detected activity types to the system log. Use `.default`
-        // (not `.info`) so Console.app shows them without the user having
-        // to enable "Include Info Messages".
-        if let event = activity.latestActivity() {
-            os_log("检测到活动：%{public}@", log: activityLog, type: .default, event.kind.rawValue)
+        // State machine transitions are the events the user actually
+        // cares about ("工作会话开始" / "休息判定" / "超时判定").
+        if stateMachine.lastEvent != .none {
+            os_log("%{public}@", log: activityLog, type: .default, stateMachine.lastEvent.logMessage)
+        }
+
+        // Raw activity ("鼠标点击" / "键盘按键" …) throttled to once per
+        // 5 s — the per-event stream is too noisy to be useful.
+        if let activityEvent, now.timeIntervalSince(lastActivityLog) >= Self.activityLogInterval {
+            os_log("检测到活动：%{public}@", log: activityLog, type: .default, activityEvent.kind.rawValue)
+            lastActivityLog = now
         }
     }
 
@@ -122,6 +142,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restMinutes: newConfig.restMinutes
         )
         statusBar.rebuildMenu()
+    }
+
+    // MARK: - Restart
+
+    /// Relaunch the app by spawning a detached shell that waits
+    /// briefly and then `open -n`s the same `.app` bundle, then
+    /// terminating the current process.
+    ///
+    /// The `sleep` is the load-bearing piece: `NSApp.terminate`
+    /// tears the run loop down faster than LaunchServices can
+    /// spin up a replacement process, so without it the user just
+    /// sees the app close. `open -n` (instead of plain `open`)
+    /// asks LaunchServices for a new instance even if a single-
+    /// instance lock might otherwise be picked up.
+    ///
+    /// The shell wrapper also lets us quote-escape the bundle
+    /// path safely (the build directory can contain spaces and
+    /// non-ASCII characters like `腰痛`).
+    func restartApp() {
+        let path = Bundle.main.bundlePath
+        let escaped = path.replacingOccurrences(of: "'", with: "'\\''")
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", "sleep 0.3 && /usr/bin/open -n '\(escaped)'"]
+        do {
+            try task.run()
+        } catch {
+            os_log("restart failed: %{public}@",
+                   log: activityLog, type: .error,
+                   String(describing: error))
+        }
+        NSApp.terminate(nil)
     }
 
     // MARK: - Smoke test

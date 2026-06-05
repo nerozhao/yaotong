@@ -10,10 +10,14 @@ final class MainWindowController {
 
     private let config: ConfigStore
     private let appState: AppState
+    private let onRestart: () -> Void
 
-    init(config: ConfigStore, appState: AppState) {
+    init(config: ConfigStore,
+         appState: AppState,
+         onRestart: @escaping () -> Void = {}) {
         self.config = config
         self.appState = appState
+        self.onRestart = onRestart
     }
 
     /// Open the main window. If already open, bring it to the front.
@@ -29,7 +33,8 @@ final class MainWindowController {
             appState: appState,
             onQuit: {
                 NSApp.terminate(nil)
-            }
+            },
+            onRestart: onRestart
         )
         let host = NSHostingController(rootView: content)
 
@@ -60,10 +65,23 @@ final class MainWindowController {
         self.window = win
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
 
-    /// Called by AppDelegate when the user changes a config setting; the
-    /// SwiftUI view already auto-refreshes via @ObservedObject, so this is
-    /// a no-op for now — kept as an extension point.
-    func refresh() {}
+        // Promote to .regular so the app icon appears in the Dock
+        // while the main window is visible. Info.plist still has
+        // LSUIElement=true as the default (so we're menu-bar-only
+        // at launch until `open()` is called).
+        NSApp.setActivationPolicy(.regular)
+
+        // Demote back to .accessory when the window closes, so the
+        // app goes back to "background only" once the user is done
+        // looking at it. `NSWindow.willCloseNotification` fires on
+        // the X button as well as programmatic close.
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: win,
+            queue: .main
+        ) { _ in
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
 }

@@ -141,9 +141,17 @@ enum SmokeTest {
             "click icon: menu has '休息时长' item",
             menuTitles.contains(where: { $0.contains("休息时长") })
         )
+        // The pause menu item's label flips based on `shouldPause(now:)`
+        // — outside work hours the label reads "开始腰痛" (auto-paused
+        // by the schedule). We just check that *one* of the two is
+        // present, not a specific one.
         check(
-            "click icon: menu has '暂停 1 小时' item",
-            menuTitles.contains(where: { $0.contains("暂停 1 小时") })
+            "click icon: menu has a pause/start toggle item",
+            menuTitles.contains(where: { $0.contains("暂停腰痛") || $0.contains("开始腰痛") })
+        )
+        check(
+            "click icon: menu has '重启 腰痛' item",
+            menuTitles.contains(where: { $0.contains("重启 腰痛") })
         )
         check(
             "click icon: menu has '退出 腰痛' item",
@@ -151,8 +159,8 @@ enum SmokeTest {
         )
         let workItem = controller.statusItem.menu?.items.first { $0.title.contains("工作时长") }
         check(
-            "click icon: work-duration submenu has all 7 allowed options",
-            workItem?.submenu?.items.count == ConfigStore.allowedMinuteOptions.count
+            "click icon: work-duration submenu has all allowed options",
+            workItem?.submenu?.items.count == ConfigStore.allowedWorkMinuteOptions.count
         )
 
         // ---- §6.3: 修改工作时长后立即生效
@@ -203,33 +211,44 @@ enum SmokeTest {
             reloaded.restMinutes == 15
         )
 
-        // ---- §6.3: "暂停 1 小时"后图标停止变化
+        // ---- §6.3: "暂停腰痛"后状态机冻结
         let pauseStart = Date()
-        config.pauseUntil = pauseStart.addingTimeInterval(60 * 60)
+        config.isPaused = true
         sm = StateMachine(workMinutes: 30, restMinutes: 10)
         let pauseTick = sm.tick(
             now: pauseStart,
             idleSeconds: 0,
-            isPaused: config.isPaused(now: pauseStart)
+            isPaused: config.isPaused
         )
         check(
-            "pause 1h: tick during pause reports .working and zeroes both counters",
+            "pause: tick during pause reports .working and zeroes both counters",
             pauseTick == .working && sm.workTime == 0 && sm.restTime == 0
         )
-        let unpauseTime = pauseStart.addingTimeInterval(2 * 60 * 60)
-        let unpauseTick = sm.tick(
-            now: unpauseTime,
-            idleSeconds: 0,
-            isPaused: config.isPaused(now: unpauseTime)
+        // Pause is a pure toggle — even 24h later, state stays paused.
+        let later = pauseStart.addingTimeInterval(24 * 60 * 60)
+        let stillPausedTick = sm.tick(
+            now: later,
+            idleSeconds: 24 * 60 * 60,
+            isPaused: config.isPaused
         )
         check(
-            "pause 1h: first tick after unpause is a fresh .working session",
+            "pause: state machine stays paused indefinitely (no auto-resume)",
+            stillPausedTick == .working && sm.workTime == 0
+        )
+        // "开始腰痛" flips it off; first active tick is a fresh .working.
+        config.isPaused = false
+        let unpauseTick = sm.tick(
+            now: later,
+            idleSeconds: 0,
+            isPaused: config.isPaused
+        )
+        check(
+            "pause: first tick after unpause is a fresh .working session",
             unpauseTick == .working
         )
 
-        // Pause toggle round-trips. The previous step left a pause in
-        // effect, so clear it first to test the off → on → off path.
-        config.pauseUntil = nil
+        // Pause toggle round-trips. Clear pause first to test off → on → off.
+        config.isPaused = false
         let toggledOn = config.togglePause()
         let toggledOff = config.togglePause()
         check(
@@ -246,20 +265,6 @@ enum SmokeTest {
         check(
             "quit: button snapshot is non-nil (icon was rendered before quit)",
             controller.statusItem.button != nil
-        )
-
-        // ---- Debug panel: forcing icon state via AppState changes the icon
-        appState.setForcedState(.overtime)
-        controller.setState(.overtime)
-        check(
-            "debug: forcing .overtime still produces a red icon",
-            SmokeTest.dominantRedness(of: controller.statusItem.button?.image) > 0.3
-        )
-        appState.setForcedState(.working)
-        controller.setState(.working)
-        check(
-            "debug: forcing .working produces a non-red icon",
-            SmokeTest.dominantRedness(of: controller.statusItem.button?.image) < 0.1
         )
 
         emit("=== \(passed) passed, \(failed) failed ===")
