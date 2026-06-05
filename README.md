@@ -46,8 +46,8 @@ log show --predicate 'subsystem == "local.yaotong"' --info --last 5m
 
 ## 许可
 
-[MIT No Attribution (MIT-0)](LICENSE) — 宽松协议，使用、修改、分发都不受限，连署名都省了。
+[MIT](LICENSE)。
 
 ## 开发说明
 
-本项目用 [Claude Code](https://claude.com/claude-code)（Anthropic 出品的 CLI 编程助手，基于 Claude 系列模型）+ [MiniMax](https://MiniMax.chat) 协作开发——从需求对话、代码生成、测试验证到文档撰写全程由 AI 辅助完成。
+本项目用 [Claude Code](https://claude.com/claude-code)（Anthropic 出品的 CLI 编程助手）+ MiniMax 的 **M3 模型**协作开发——从需求对话、代码生成、测试验证到文档撰写全程由 AI 辅助完成。
