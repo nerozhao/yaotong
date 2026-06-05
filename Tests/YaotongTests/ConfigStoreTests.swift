@@ -32,9 +32,13 @@ final class ConfigStoreTests: XCTestCase {
     // MARK: - Allowed values
 
     func testAllowedValuesAreAccepted() {
-        for minutes in ConfigStore.allowedMinuteOptions {
+        for minutes in ConfigStore.allowedWorkMinuteOptions {
             store.workMinutes = minutes
             XCTAssertEqual(store.workMinutes, minutes)
+        }
+        for minutes in ConfigStore.allowedRestMinuteOptions {
+            store.restMinutes = minutes
+            XCTAssertEqual(store.restMinutes, minutes)
         }
     }
 

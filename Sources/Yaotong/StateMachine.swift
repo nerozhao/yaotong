@@ -25,7 +25,7 @@ enum StateMachineEvent: Equatable {
         case .none:
             return ""
         case .workSessionStarted:
-            return "工作会话开始：计时器已归零"
+            return "工作会话开始：检测到活动"
         case .workSessionReset(let idle):
             let mins = Int(idle / 60)
             let secs = Int(idle.truncatingRemainder(dividingBy: 60))
@@ -40,15 +40,21 @@ enum StateMachineEvent: Equatable {
     }
 }
 
-/// State machine with **two independent counters** that run simultaneously:
+/// State machine with two independent semantics:
 ///
-/// - `workTime` counts up every tick. It is reset to 0 only when the user
-///   "rests" (idle for `restThreshold` seconds).
-/// - `restTime` counts up every tick *unless* the user is currently active
-///   (mouse / keyboard input in the last second), in which case it resets
-///   to 0.
+/// - **`workTime`**: total *active* time since the last "rested" event.
+///   It only ticks when the user is currently active (mouse / keyboard
+///   input in the last second). It is reset to 0 when the rest threshold
+///   is hit, and stays at 0 until the user moves / types again.
+///
+/// - **`restTime`**: total *idle* time since the last activity event.
+///   It is reset to 0 every time the user is active, and otherwise
+///   adopts the system-reported idle seconds.
 ///
 /// The icon is `overtime` when `workTime >= workThreshold`, else `working`.
+/// Per spec: "如果休息达到要求，那么工作应该归0，直到有鼠标活动才开始
+/// 计时了" — work is the active-time counter, gated on the user being
+/// present.
 final class StateMachine {
 
     /// Time below which a tick is considered "the user is currently
@@ -68,7 +74,7 @@ final class StateMachine {
     }
 
     /// Apply a tick. Returns the resulting state. After the call,
-    /// `lastEvent` describes what happened (for the log / debug panel).
+    /// `lastEvent` describes what happened (for the log).
     @discardableResult
     func tick(now: Date, idleSeconds: TimeInterval, isPaused: Bool) -> StatusState {
         if isPaused {
@@ -82,32 +88,32 @@ final class StateMachine {
         let prevWork = workTime
         let prevRest = restTime
 
-        // Both counters tick up. The rest counter is re-zeroed on activity;
-        // when not active, we just adopt the system's view of "how long has
-        // the user been idle" — that way a long idle period is picked up
-        // even if some ticks were coalesced or missed.
-        workTime += 1
+        // Rest counter: 0 when active, otherwise adopt the system's view.
         if wasActive {
             restTime = 0
         } else {
             restTime = idleSeconds
         }
 
-        // Rest crossed threshold → work resets to 0.
+        // Rest crossed threshold → reset work to 0.
         if prevRest < restThreshold && restTime >= restThreshold {
             workTime = 0
             lastEvent = .workSessionReset(idleSeconds: restTime)
             return .working
         }
 
-        // Work crossed threshold → overtime.
+        // Work counter: only ticks while the user is active.
+        if wasActive {
+            workTime += 1
+        }
+
+        // Work crossed the overtime threshold.
         if prevWork < workThreshold && workTime >= workThreshold {
             lastEvent = .overtimeReached(elapsed: workTime)
             return .overtime
         }
 
-        // Work just started ticking (from 0 to 1) — either at launch,
-        // after pause, or after a rest-reset.
+        // Work session just kicked off (0 → 1).
         if prevWork == 0 && workTime == 1 {
             lastEvent = .workSessionStarted
             return .working

@@ -64,13 +64,25 @@ Package.swift                    SwiftPM 清单
 
 ### 4.1 活动信号：CGEventSource 而非全局监听
 
-**结论**：只调用 `CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: 0xFFFFFFFF)`，**不安装**任何 `CGEventTap` / `NSEvent monitor`。
+**结论**：只调用 `CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: ...)`，**不安装**任何 `CGEventTap` / `NSEvent monitor`。
 
 **原因**：
-- 不需要计算鼠标移动量或时间窗
 - 不需要申请辅助功能（Accessibility）权限
 - 不污染用户的事件流（事件监听有性能影响）
 - 一次系统调用，零状态
+
+`SystemActivityMonitor` 同时查询多个 `CGEventType`（`.leftMouseDown`、`.mouseMoved`、`.keyDown`、`.scrollWheel`、`.tabletPointer` 等），每 tick 跟前一次对比：
+- `secondsSinceLastEventType` 下降 → 该类型刚发生了一次事件
+- 第一次出现的类型通过 `os_log` 写入系统日志（subsystem `local.yaotong`, category `activity`），格式如：
+
+```
+[local.yaotong:activity] 检测到活动：鼠标点击
+[local.yaotong:activity] 检测到活动：键盘按键
+[local.yaotong:activity] 检测到活动：滚轮滚动
+[local.yaotong:activity] 检测到活动：鼠标移动
+```
+
+在「控制台.app」中按 subsystem `local.yaotong` 过滤即可看到这些条目（`log show --predicate 'subsystem == "local.yaotong"' --info --last 5m`）。
 
 `0xFFFFFFFF` 是 `kCGAnyInputEventType` 的原始值 —— Swift overlay 没有给 `CGEventType.any` 这样的 case，需要手动构造。
 
@@ -89,25 +101,25 @@ tinted.isTemplate = false
 
 **测试**：smoke test 读 icon 的 bitmap 像素，断言 >30% 的不透明像素 R 通道占主导（`r > 0.5 && r > g+0.15 && r > b+0.15`）。把 icon 状态直接 dump 到 `/tmp/yaotong-overtime-icon.png` / `/tmp/yaotong-working-icon.png` 供视觉验证。
 
-### 4.3 状态机：双独立计时器
+### 4.3 状态机：互斥的活动 / 空闲计时器
 
-`StateMachine` 持有 **两个独立计数器**，每 tick 同时累加：
+`StateMachine` 持有两个互斥的语义计数器：
 
-- `workTime`：每 tick +1，**不依赖活动**（从上次"休息判定"重置之后开始累加）
-- `restTime`：每 tick 设为系统的 `idleSeconds`（非活动时），或归零（活动时，`idleSeconds < 1s`）
+- **`workTime` = 自上次休息以来的**活动时长**。仅当 `idleSeconds < 1.0`（用户在最近 1 秒内有过输入）时每 tick +1；空闲时**不**累加。
+- **`restTime` = 自上次活动以来的**空闲时长**。活动时归零，空闲时取系统的 `idleSeconds`。
 
 `tick(now:idleSeconds:isPaused:)` 返回 `StatusState`：
 - `overtime`：当 `workTime >= workThreshold`
 - `working`：其他
 
-`prevX < threshold && X >= threshold` 的"刚刚跨过"模式触发事件 `lastEvent: StateMachineEvent`：
-- `workSessionStarted` —— workTime 从 0 → 1（启动 / 暂停后 / 休息后）
-- `workSessionReset(idleSeconds:)` —— 休息判定命中，重置 workTime
-- `overtimeReached(elapsed:)` —— 工作判定命中
-- `paused` —— 暂停中（不写日志）
+按"刚刚跨过"模式触发事件 `lastEvent: StateMachineEvent`：
+- `workSessionStarted` —— `workTime` 从 0 → 1
+- `workSessionReset(idleSeconds:)` —— `restTime` 跨过休息阈值，重置 `workTime = 0`
+- `overtimeReached(elapsed:)` —— `workTime` 跨过工作阈值
+- `paused` —— 暂停中
 - `.none` —— 常规 tick
 
-`AppDelegate` 读 `lastEvent`，非 `.none` / 非 `.paused` 时写一行中文到 `LogStore`。
+按用户要求：休息判定命中后工作归 0，**直到下一次活动**才重新开始累加（不是空闲也累加）。
 
 ### 4.4 调试面板：SwiftUI + AppKit 桥接
 
@@ -172,3 +184,4 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 26 集成测试
 - 2026-06-05: 1 分钟选项改为 2 分钟
 - 2026-06-05: 状态机改为双独立计时器；主界面窗口 + 启动后自动显示；菜单第一项「🪟 显示主界面」
 - 2026-06-05: 工作/休息选项拆成两个独立列表（工作 2/5/10/15/20/30/45/60，休息 1/5/10/15/20/30/45/60）；主界面重排为「工作计时（主）在上 / 休息计时在下」；移除全部调试面板相关代码
+- 2026-06-05: 状态机改为"工作 = 活动时长 / 休息 = 空闲时长"互斥模型；`ActivityMonitor` 区分活动类型并通过 `os_log` 写入系统日志（subsystem `local.yaotong`）

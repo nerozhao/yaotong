@@ -1,4 +1,5 @@
 import AppKit
+import os.log
 
 /// Application entry point. Wires the configuration, state machine, status
 /// bar controller, main window, and 1 Hz tick loop together.
@@ -6,7 +7,6 @@ import AppKit
 struct YaotongApp {
     static func main() {
         let app = NSApplication.shared
-        // We do all our UI via NSStatusItem + a single main window.
         app.setActivationPolicy(.accessory)
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -17,20 +17,20 @@ struct YaotongApp {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
-    // Tick is invoked from a Timer callback on the main run loop, so the
-    // class is @MainActor to silence concurrency warnings when reading
-    // `appState.forcedIconState`.
-
     private var config: ConfigStore!
     private var statusBar: StatusBarController!
     private var stateMachine: StateMachine!
-    private var activity: ActivityProviding = SystemActivityMonitor()
+    private let activity = SystemActivityMonitor()
     private var tickTimer: Timer?
     private let appState = AppState()
     private var mainWindow: MainWindowController!
 
     /// Last computed state — used to detect transitions.
     private var lastState: StatusState = .working
+
+    /// System log for activity detection — viewable in Console.app or via
+    /// `log show --predicate 'subsystem == "local.yaotong"'`.
+    private let activityLog = OSLog(subsystem: "local.yaotong", category: "activity")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Smoke-test mode: drive the §6.3 scenarios headlessly and exit.
@@ -40,6 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+
+        // A sentinel log entry so the user can confirm the logger is wired
+        // up correctly from Console.app / `log show`.
+        os_log("腰痛 启动 (subsystem=local.yaotong, category=activity)",
+               log: activityLog, type: .info)
 
         config = ConfigStore()
         stateMachine = StateMachine(
@@ -62,8 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         startTicking()
 
-        // Auto-open the main window at launch so the user sees their
-        // timers immediately.
+        // Auto-open the main window at launch.
         DispatchQueue.main.async { [weak self] in
             self?.mainWindow?.open()
         }
@@ -78,16 +82,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startTicking() {
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            // The timer fires on the main run loop, so we can safely assume
-            // main-actor isolation here.
             MainActor.assumeIsolated {
                 self?.tick()
             }
         }
-        // Common modes so the timer keeps running while the user is in a menu.
         RunLoop.main.add(timer, forMode: .common)
         tickTimer = timer
-        // Run an immediate tick so the icon shows the correct color right away.
         MainActor.assumeIsolated { tick() }
     }
 
@@ -104,13 +104,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.restThresholdSeconds = TimeInterval(config.restMinutes * 60)
 
         statusBar.setState(computed)
-        _ = lastState // keep the field so we can re-introduce state-change logging later
+        _ = lastState
+
+        // Log detected activity types to the system log (visible in
+        // Console.app under subsystem "local.yaotong" or via
+        // `log show --predicate 'subsystem == "local.yaotong"' --last 5m`).
+        if let event = activity.latestActivity() {
+            os_log("检测到活动：%{public}@", log: activityLog, type: .info, event.kind.rawValue)
+        }
     }
 
     // MARK: - Config change handling
 
     private func handleConfigChange(_ newConfig: ConfigStore) {
-        // Recreate the state machine so the new thresholds take effect cleanly.
         stateMachine = StateMachine(
             workMinutes: newConfig.workMinutes,
             restMinutes: newConfig.restMinutes
@@ -123,15 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func cleanupAndExit() {
         tickTimer?.invalidate()
         tickTimer = nil
-        // Make sure the status item is removed before we quit so it
-        // doesn't briefly survive the process.
         statusBar = nil
-        // In smoke-test mode, propagate the test result as the exit code.
         if CommandLine.arguments.contains("--smoke-test") {
             let code = SmokeTest.lastExitCode
-            // NSApp.terminate uses the app's termination reply; force the
-            // raw process exit so the smoke-test result is honoured even
-            // when the app was launched as a .app bundle.
             exit(code)
         }
         NSApp.terminate(nil)
