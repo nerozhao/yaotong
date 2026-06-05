@@ -4,10 +4,10 @@ import Foundation
 /// Mirrors the keys in `Resources/Info.plist`; keep them in sync when
 /// bumping.
 enum AppVersion {
-    /// `CFBundleShortVersionString` — user-facing "0.3.0" string.
-    static let short: String = "0.3.0"
+    /// `CFBundleShortVersionString` — user-facing "0.3.1" string.
+    static let short: String = "0.3.1"
     /// `CFBundleVersion` — monotonically increasing build number.
-    static let build: String = "3"
+    static let build: String = "4"
 
     /// ISO-8601 UTC timestamp written by `build.sh` on every build
     /// (custom `YTBuildTime` key in Info.plist). Falls back to
@@ -32,9 +32,9 @@ enum AppVersion {
         return display.string(from: date)
     }()
 
-    /// "v0.3.0 · built 2026-06-05 14:32:00" — the footer line. The
+    /// "v0.3.1 · built 2026-06-05 14:32:00" — the footer line. The
     /// build number is intentionally omitted: the version is what
     /// users quote when reporting issues, the wall-clock is what they
-    /// care about, and `(3)` adds no information once you know the date.
+    /// care about, and `(4)` adds no information once you know the date.
     static let footer: String = "v\(short) · built \(localBuildTime)"
 }
