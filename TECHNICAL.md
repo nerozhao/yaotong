@@ -101,25 +101,26 @@ tinted.isTemplate = false
 
 **测试**：smoke test 读 icon 的 bitmap 像素，断言 >30% 的不透明像素 R 通道占主导（`r > 0.5 && r > g+0.15 && r > b+0.15`）。把 icon 状态直接 dump 到 `/tmp/yaotong-overtime-icon.png` / `/tmp/yaotong-working-icon.png` 供视觉验证。
 
-### 4.3 状态机：墙钟工作 + 活动触发的休息
+### 4.3 状态机：墙钟工作 + 休息后的活动门
 
-`StateMachine` 持有两个独立的语义计数器：
+`StateMachine` 持有两个独立计数器 + 一个门：
 
-- **`workTime` = 自上次休息以来的墙钟时长**。每 tick +1，**不依赖**活动。`restTime` 跨过阈值时被重置为 0。
+- **`workTime` = 自上次休息以来的墙钟时长**。每 tick +1，**不依赖**活动。`restTime` 跨过阈值时被重置为 0，并触发"等待活动"门。
 - **`restTime` = 自上次活动以来的空闲时长**。活动时归零，空闲时取系统的 `idleSeconds`。
+- **`waitingForActivity`**：布尔门。休息判定命中后置 true，期间 `workTime` 保持 0；下一次活动 tick 释放门，工作下一 tick 重新开始累加。
 
 `tick(now:idleSeconds:isPaused:)` 返回 `StatusState`：
 - `overtime`：当 `workTime >= workThreshold`
 - `working`：其他
 
 按"刚刚跨过"模式触发事件 `lastEvent: StateMachineEvent`：
-- `workSessionStarted` —— `workTime` 从 0 → 1
-- `workSessionReset(idleSeconds:)` —— `restTime` 跨过休息阈值，重置 `workTime = 0`
+- `workSessionStarted` —— `workTime` 从 0 → 1，或"等待活动"门释放后第一 tick
+- `workSessionReset(idleSeconds:)` —— `restTime` 跨过休息阈值，重置 `workTime = 0` 并挂起门
 - `overtimeReached(elapsed:)` —— `workTime` 跨过工作阈值
 - `paused` —— 暂停中
 - `.none` —— 常规 tick
 
-按用户要求：工作计时是墙钟（鼠标不动也累加），休息计时只在用户活动时归零并继续累计。
+按用户要求：工作计时是墙钟（鼠标不动也累加），但休息判定命中后会挂起门直到下一次活动才重新开始。
 
 ### 4.4 调试面板：SwiftUI + AppKit 桥接
 
@@ -186,3 +187,4 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 26 集成测试
 - 2026-06-05: 工作/休息选项拆成两个独立列表（工作 2/5/10/15/20/30/45/60，休息 1/5/10/15/20/30/45/60）；主界面重排为「工作计时（主）在上 / 休息计时在下」；移除全部调试面板相关代码
 - 2026-06-05: 状态机改为"工作 = 活动时长 / 休息 = 空闲时长"互斥模型；`ActivityMonitor` 区分活动类型并通过 `os_log` 写入系统日志（subsystem `local.yaotong`）
 - 2026-06-05: 状态机再改为"工作 = 墙钟时长 / 休息 = 空闲时长"模型（工作不依赖活动）；`os_log` 改用 `.default` 级别以便控制台默认显示
+- 2026-06-05: 增加 `waitingForActivity` 门——休息判定命中后工作保持 0，直到下次活动才恢复累加（不影响平时的墙钟累加）

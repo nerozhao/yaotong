@@ -159,11 +159,11 @@ final class StateMachineTests: XCTestCase {
     func testEventLogMessages() {
         XCTAssertEqual(
             StateMachineEvent.workSessionStarted.logMessage,
-            "工作会话开始：检测到活动"
+            "工作会话开始：检测到活动，重置后恢复计时"
         )
         XCTAssertEqual(
             StateMachineEvent.workSessionReset(idleSeconds: 615).logMessage,
-            "休息判定：已空闲 10分15秒，重置工作计时器"
+            "休息判定：已空闲 10分15秒，重置工作计时器并等待活动"
         )
         XCTAssertEqual(
             StateMachineEvent.overtimeReached(elapsed: 1825).logMessage,
@@ -180,7 +180,7 @@ final class StateMachineTests: XCTestCase {
         XCTAssertEqual(sm.workTime, 0)
         XCTAssertEqual(sm.restTime, 0)
         _ = sm.tick(now: t0, idleSeconds: 0, isPaused: false)
-        // After one tick: workTime=1, restTime=0.
+        // After one active tick: workTime=1, restTime=0.
         XCTAssertEqual(sm.workTime, 1)
         XCTAssertEqual(sm.restTime, 0)
         // Second tick — user is now idle for 5 sec. workTime STILL
@@ -191,10 +191,10 @@ final class StateMachineTests: XCTestCase {
         XCTAssertEqual(sm.restTime, 5)
     }
 
-    /// In the new model, work is wall-clock and only resets when the
-    /// rest threshold is crossed. After the reset, the next tick
-    /// resumes counting immediately.
-    func testWorkResumesAfterRest() {
+    /// After a rest reset, work stays at 0 and the post-rest gate
+    /// is engaged. The gate releases on the next active tick; the
+    /// tick AFTER that is the first one that increments work.
+    func testWorkWaitsForActivityAfterRest() {
         let sm = StateMachine(workMinutes: 30, restMinutes: 10)
         let t0 = Date(timeIntervalSince1970: 0)
         // Active for 31 min — work crosses the threshold (overtime).
@@ -202,7 +202,8 @@ final class StateMachineTests: XCTestCase {
             _ = sm.tick(now: t0.addingTimeInterval(TimeInterval(i)), idleSeconds: 0, isPaused: false)
         }
         XCTAssertEqual(sm.workTime, 31 * 60)
-        // Now report 11 min idle — rest crosses the threshold and work resets.
+        // Now report 11 min idle — rest crosses the threshold, work resets,
+        // and the post-rest gate is engaged.
         let after = sm.tick(
             now: t0.addingTimeInterval(TimeInterval(31 * 60 + 11 * 60)),
             idleSeconds: 11 * 60,
@@ -210,13 +211,33 @@ final class StateMachineTests: XCTestCase {
         )
         XCTAssertEqual(after, .working)
         XCTAssertEqual(sm.workTime, 0)
-        // Next idle tick — work resumes counting (wall-clock, no gate).
+        XCTAssertTrue(sm.waitingForActivity)
+        // More idle ticks — work stays at 0.
         let stillIdle = sm.tick(
             now: t0.addingTimeInterval(TimeInterval(31 * 60 + 12 * 60)),
             idleSeconds: 12 * 60,
             isPaused: false
         )
         XCTAssertEqual(stillIdle, .working)
+        XCTAssertEqual(sm.workTime, 0)
+        XCTAssertTrue(sm.waitingForActivity)
+        // First active tick — gate releases, work stays at 0 (this is
+        // the "I just noticed you" tick, not a full second of work).
+        let firstActive = sm.tick(
+            now: t0.addingTimeInterval(TimeInterval(31 * 60 + 13 * 60)),
+            idleSeconds: 0,
+            isPaused: false
+        )
+        XCTAssertEqual(firstActive, .working)
+        XCTAssertEqual(sm.workTime, 0)
+        XCTAssertFalse(sm.waitingForActivity)
+        XCTAssertEqual(sm.lastEvent, .workSessionStarted)
+        // Next active tick — work starts counting.
+        _ = sm.tick(
+            now: t0.addingTimeInterval(TimeInterval(31 * 60 + 14 * 60)),
+            idleSeconds: 0,
+            isPaused: false
+        )
         XCTAssertEqual(sm.workTime, 1)
     }
 }

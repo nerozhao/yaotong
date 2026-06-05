@@ -9,9 +9,11 @@ enum StatusState: Equatable {
 /// Reason the state machine's state changed on a given tick.
 enum StateMachineEvent: Equatable {
     case none
-    /// Work counter just went from 0 to 1 (after launch, pause, or rest-reset).
+    /// Work counter just went from 0 to 1 — after a rest-reset, the
+    /// user became active again and the post-rest gate released.
     case workSessionStarted
-    /// Rest counter crossed the rest threshold, resetting the work counter.
+    /// Rest counter crossed the rest threshold, resetting the work
+    /// counter and engaging the post-rest gate.
     /// `idleSeconds` is how long the user had been idle when we detected it.
     case workSessionReset(idleSeconds: TimeInterval)
     /// Work counter crossed the work threshold.
@@ -25,11 +27,11 @@ enum StateMachineEvent: Equatable {
         case .none:
             return ""
         case .workSessionStarted:
-            return "工作会话开始：检测到活动"
+            return "工作会话开始：检测到活动，重置后恢复计时"
         case .workSessionReset(let idle):
             let mins = Int(idle / 60)
             let secs = Int(idle.truncatingRemainder(dividingBy: 60))
-            return "休息判定：已空闲 \(mins)分\(secs)秒，重置工作计时器"
+            return "休息判定：已空闲 \(mins)分\(secs)秒，重置工作计时器并等待活动"
         case .overtimeReached(let elapsed):
             let mins = Int(elapsed / 60)
             let secs = Int(elapsed.truncatingRemainder(dividingBy: 60))
@@ -40,19 +42,19 @@ enum StateMachineEvent: Equatable {
     }
 }
 
-/// State machine with two independent counters:
+/// State machine with two counters and a "post-rest gate":
 ///
-/// - **`workTime`**: wall-clock time since the last "rested" event.
-///   It ticks every second regardless of activity. It is reset to 0
-///   when the rest threshold is hit.
+/// - **`workTime`**: wall-clock time since the last "rested" event. It
+///   ticks every second **unless** the post-rest gate is engaged, in
+///   which case it stays at 0 until the user becomes active again.
+///   It is reset to 0 when the rest threshold is hit, and the gate
+///   is engaged at the same time.
 ///
-/// - **`restTime`**: idle time since the last activity event.
-///   It is reset to 0 every time the user is active, and otherwise
-///   adopts the system-reported idle seconds.
+/// - **`restTime`**: idle time since the last activity event. Resets
+///   to 0 every time the user is active, otherwise adopts the
+///   system-reported idle seconds.
 ///
 /// The icon is `overtime` when `workTime >= workThreshold`, else `working`.
-/// Per latest spec: work is a wall-clock counter that simply resets when
-/// the user has rested long enough — it does NOT pause while idle.
 final class StateMachine {
 
     /// Time below which a tick is considered "the user is currently
@@ -61,6 +63,9 @@ final class StateMachine {
 
     private(set) var workTime: TimeInterval = 0
     private(set) var restTime: TimeInterval = 0
+    /// True when work has been reset to 0 by a rest event and is waiting
+    /// for the user to become active before resuming.
+    private(set) var waitingForActivity: Bool = false
     private(set) var lastEvent: StateMachineEvent = .none
 
     let workThreshold: TimeInterval
@@ -78,6 +83,7 @@ final class StateMachine {
         if isPaused {
             workTime = 0
             restTime = 0
+            waitingForActivity = false
             lastEvent = .paused
             return .working
         }
@@ -93,14 +99,31 @@ final class StateMachine {
             restTime = idleSeconds
         }
 
-        // Rest crossed threshold → reset work to 0.
+        // Rest crossed threshold → reset work AND engage the post-rest gate.
         if prevRest < restThreshold && restTime >= restThreshold {
             workTime = 0
+            waitingForActivity = true
             lastEvent = .workSessionReset(idleSeconds: restTime)
             return .working
         }
 
-        // Work counter: ticks every second regardless of activity.
+        // Activity releases the post-rest gate. Emit a "started" event
+        // when work resumes after a gate.
+        if wasActive && waitingForActivity {
+            waitingForActivity = false
+            // Don't increment workTime this tick — the user just
+            // became active; the first real "1 second of work" lands
+            // on the next tick.
+            lastEvent = .workSessionStarted
+            return .working
+        }
+
+        // Work counter: ticks every second unless the post-rest gate is
+        // still engaged.
+        guard !waitingForActivity else {
+            lastEvent = .none
+            return .working
+        }
         workTime += 1
 
         // Work crossed the overtime threshold.
@@ -124,6 +147,7 @@ final class StateMachine {
     func reset() {
         workTime = 0
         restTime = 0
+        waitingForActivity = false
         lastEvent = .none
     }
 }
