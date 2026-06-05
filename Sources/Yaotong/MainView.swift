@@ -38,6 +38,12 @@ struct MainView: View {
                 Button("退出 腰痛", role: .destructive) { onQuit() }
                     .keyboardShortcut("q", modifiers: .command)
             }
+            HStack {
+                Spacer()
+                Text("v\(AppVersion.display)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(20)
         .frame(minWidth: 540)
