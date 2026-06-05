@@ -12,13 +12,13 @@ final class AppState: ObservableObject {
     /// from the state machine. `nil` means "let the state machine decide".
     @Published var forcedIconState: StatusState?
 
-    /// Current work session length in seconds. Written by the tick loop
-    /// every second; read by the debug panel's config tab.
+    /// Current work-counter value in seconds. Updated by the tick loop.
     @Published var workDurationSeconds: TimeInterval = 0
+    /// Current rest-counter value in seconds. Updated by the tick loop.
+    @Published var restDurationSeconds: TimeInterval = 0
     /// Work threshold in seconds (derived from `config.workMinutes`).
-    /// The debug panel uses this to show "MM:SS / MM:SS" and a progress bar.
     @Published var workThresholdSeconds: TimeInterval = 0
-    /// Current rest threshold in seconds, for display in the config tab.
+    /// Rest threshold in seconds (derived from `config.restMinutes`).
     @Published var restThresholdSeconds: TimeInterval = 0
 
     func setForcedState(_ state: StatusState?) {

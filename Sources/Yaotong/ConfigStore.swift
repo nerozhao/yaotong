@@ -12,10 +12,17 @@ final class ConfigStore: ObservableObject {
     static let defaultWorkMinutes = 30
     static let defaultRestMinutes = 10
 
-    /// 1 minute is included for fast testing (so you can watch the icon flip
-    /// without waiting half an hour). The rest of the list is the spec's
-    /// original set of "round" values.
-    static let allowedMinuteOptions: [Int] = [1, 5, 10, 15, 20, 30, 45, 60]
+    /// Options for the work threshold. Min 2 minutes so the user has
+    /// *some* time before the icon flips, and 1 minute would be too
+    /// twitchy to be useful.
+    static let allowedWorkMinuteOptions: [Int] = [2, 5, 10, 15, 20, 30, 45, 60]
+
+    /// Options for the rest threshold. Min 1 minute so the user can
+    /// quickly test the "rest" path without waiting 10 minutes.
+    static let allowedRestMinuteOptions: [Int] = [1, 5, 10, 15, 20, 30, 45, 60]
+
+    /// Back-compat alias used by older tests / callers.
+    static var allowedMinuteOptions: [Int] { allowedRestMinuteOptions }
 
     static let pauseDuration: TimeInterval = 60 * 60  // 1 hour
 
@@ -57,10 +64,10 @@ final class ConfigStore: ObservableObject {
     var workMinutes: Int {
         get {
             let raw = defaults.integer(forKey: Key.workMinutes)
-            return Self.allowedMinuteOptions.contains(raw) ? raw : Self.defaultWorkMinutes
+            return Self.allowedWorkMinuteOptions.contains(raw) ? raw : Self.defaultWorkMinutes
         }
         set {
-            let value = Self.allowedMinuteOptions.contains(newValue) ? newValue : Self.defaultWorkMinutes
+            let value = Self.allowedWorkMinuteOptions.contains(newValue) ? newValue : Self.defaultWorkMinutes
             defaults.set(value, forKey: Key.workMinutes)
             revision += 1
             onChange?(self)
@@ -70,10 +77,10 @@ final class ConfigStore: ObservableObject {
     var restMinutes: Int {
         get {
             let raw = defaults.integer(forKey: Key.restMinutes)
-            return Self.allowedMinuteOptions.contains(raw) ? raw : Self.defaultRestMinutes
+            return Self.allowedRestMinuteOptions.contains(raw) ? raw : Self.defaultRestMinutes
         }
         set {
-            let value = Self.allowedMinuteOptions.contains(newValue) ? newValue : Self.defaultRestMinutes
+            let value = Self.allowedRestMinuteOptions.contains(newValue) ? newValue : Self.defaultRestMinutes
             defaults.set(value, forKey: Key.restMinutes)
             revision += 1
             onChange?(self)

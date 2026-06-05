@@ -43,19 +43,16 @@ Sources/Yaotong/
 ├── AppDelegate.swift            NSApplicationDelegate + 1Hz tick + 启动装配
 ├── main entry                   （AppDelegate 顶部 @main）
 ├── ConfigStore.swift            UserDefaults 包装，ObservableObject
-├── StateMachine.swift           纯状态机，输出 StatusState + StateMachineEvent
+├── StateMachine.swift           双独立计时器，输出 StatusState + StateMachineEvent
 ├── ActivityMonitor.swift        CGEventSource 包装（protocol ActivityProviding）
 ├── StatusBarController.swift    NSStatusItem + NSMenu + SF Symbol 渲染
-├── AppState.swift               forcedIconState / workDurationSeconds / 阈值
-├── LogStore.swift               环形缓冲，多线程安全
-├── DebugView.swift              SwiftUI TabView
-├── DebugWindowController.swift  NSWindow + NSHostingController
+├── AppState.swift               forcedIconState / workDurationSeconds / restDurationSeconds / 阈值
+├── MainView.swift               主界面 SwiftUI 视图（工作在上、休息在下 + 设置 + 退出）
+├── MainWindowController.swift   NSWindow + NSHostingController，启动后自动打开
 └── SmokeTest.swift              --smoke-test 模式，驱动 §6.2 集成测试
 Tests/YaotongTests/
-├── StateMachineTests.swift      状态机 + 事件 + workDuration
-├── ConfigStoreTests.swift       持久化 / 暂停 / 切换
-├── LogStoreTests.swift          环形缓冲 / 异步 / 格式化
-└── AppStateTests.swift          forcedIconState 读写
+├── StateMachineTests.swift      双计时器 + 事件 + 跨阈值
+└── ConfigStoreTests.swift       持久化 / 暂停 / 切换
 Resources/Info.plist             LSUIElement=true, NSPrincipalClass=NSApplication
 build.sh                         本地打包脚本
 Package.swift                    SwiftPM 清单
@@ -92,16 +89,25 @@ tinted.isTemplate = false
 
 **测试**：smoke test 读 icon 的 bitmap 像素，断言 >30% 的不透明像素 R 通道占主导（`r > 0.5 && r > g+0.15 && r > b+0.15`）。把 icon 状态直接 dump 到 `/tmp/yaotong-overtime-icon.png` / `/tmp/yaotong-working-icon.png` 供视觉验证。
 
-### 4.3 状态机：纯函数 + lastEvent 旁路输出
+### 4.3 状态机：双独立计时器
 
-`StateMachine.tick(now:idleSeconds:isPaused:)` 返回 `StatusState`，把"为什么"放在 `lastEvent: StateMachineEvent` 属性上。`AppDelegate` 读 `lastEvent`，非 `.none` / 非 `.paused` 时写一行中文到 `LogStore`。
+`StateMachine` 持有 **两个独立计数器**，每 tick 同时累加：
 
-事件类型：
-- `workSessionStarted` —— 工作会话首次启动
-- `workSessionReset(idleSeconds:)` —— 休息判定命中
-- `overtimeReached(elapsed:)` —— 跨过工作阈值
-- `paused` —— 暂停中（不写日志，否则每秒刷一遍）
+- `workTime`：每 tick +1，**不依赖活动**（从上次"休息判定"重置之后开始累加）
+- `restTime`：每 tick 设为系统的 `idleSeconds`（非活动时），或归零（活动时，`idleSeconds < 1s`）
+
+`tick(now:idleSeconds:isPaused:)` 返回 `StatusState`：
+- `overtime`：当 `workTime >= workThreshold`
+- `working`：其他
+
+`prevX < threshold && X >= threshold` 的"刚刚跨过"模式触发事件 `lastEvent: StateMachineEvent`：
+- `workSessionStarted` —— workTime 从 0 → 1（启动 / 暂停后 / 休息后）
+- `workSessionReset(idleSeconds:)` —— 休息判定命中，重置 workTime
+- `overtimeReached(elapsed:)` —— 工作判定命中
+- `paused` —— 暂停中（不写日志）
 - `.none` —— 常规 tick
+
+`AppDelegate` 读 `lastEvent`，非 `.none` / 非 `.paused` 时写一行中文到 `LogStore`。
 
 ### 4.4 调试面板：SwiftUI + AppKit 桥接
 
@@ -163,3 +169,6 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 26 集成测试
 - 2026-06-05: 图标改为 `circle.fill`（solid circle），pointSize 20 → 16
 - 2026-06-05: 默认值和选项各 +1 分钟（30→31, 10→11, 选项 6/11/16/21/31/46/61）
 - 2026-06-05: 回退上一改动；改为在选项列表里**加一个 1 分钟**（用于快速测试，不影响默认值），图标 16→18pt
+- 2026-06-05: 1 分钟选项改为 2 分钟
+- 2026-06-05: 状态机改为双独立计时器；主界面窗口 + 启动后自动显示；菜单第一项「🪟 显示主界面」
+- 2026-06-05: 工作/休息选项拆成两个独立列表（工作 2/5/10/15/20/30/45/60，休息 1/5/10/15/20/30/45/60）；主界面重排为「工作计时（主）在上 / 休息计时在下」；移除全部调试面板相关代码

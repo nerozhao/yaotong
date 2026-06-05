@@ -1,12 +1,12 @@
 import AppKit
 
 /// Application entry point. Wires the configuration, state machine, status
-/// bar controller, log store and 1 Hz tick loop together.
+/// bar controller, main window, and 1 Hz tick loop together.
 @main
 struct YaotongApp {
     static func main() {
         let app = NSApplication.shared
-        // We do all our UI via NSStatusItem and the (optional) debug window.
+        // We do all our UI via NSStatusItem + a single main window.
         app.setActivationPolicy(.accessory)
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -26,11 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var stateMachine: StateMachine!
     private var activity: ActivityProviding = SystemActivityMonitor()
     private var tickTimer: Timer?
-    private let logStore = LogStore()
     private let appState = AppState()
-    private var debugWindow: DebugWindowController!
+    private var mainWindow: MainWindowController!
 
-    /// Last computed state — used to detect transitions for logging.
+    /// Last computed state — used to detect transitions.
     private var lastState: StatusState = .working
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -47,38 +46,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             workMinutes: config.workMinutes,
             restMinutes: config.restMinutes
         )
-        debugWindow = DebugWindowController(
+        mainWindow = MainWindowController(
             config: config,
-            logStore: logStore,
             appState: appState
         )
-        statusBar = StatusBarController(config: config, debugWindow: debugWindow)
+        statusBar = StatusBarController(
+            config: config,
+            mainWindow: mainWindow
+        )
 
-        // Rebuild state machine + menu when the user changes a setting, and
-        // emit a log entry so the debug panel can show the change happened.
+        // Rebuild state machine + menu when the user changes a setting.
         config.onChange = { [weak self] newConfig in
             self?.handleConfigChange(newConfig)
         }
 
-        logStore.log("应用启动 — 工作 \(config.workMinutes) 分钟 / 休息 \(config.restMinutes) 分钟")
         startTicking()
 
-        // Optional: open the debug window at launch (used by manual QA and
-        // screenshot scripts). `--show-debug=test|log` jumps to that tab.
-        let showDebugArg = CommandLine.arguments.first(where: { $0.hasPrefix("--show-debug") })
-        if let arg = showDebugArg {
-            let tab: DebugView.Tab
-            if arg.contains("=test") { tab = .test }
-            else if arg.contains("=log") { tab = .log }
-            else { tab = .config }
-            DispatchQueue.main.async { [weak self] in
-                self?.debugWindow?.open(initialTab: tab)
-            }
+        // Auto-open the main window at launch so the user sees their
+        // timers immediately.
+        DispatchQueue.main.async { [weak self] in
+            self?.mainWindow?.open()
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        logStore.log("应用退出")
         tickTimer?.invalidate()
         tickTimer = nil
     }
@@ -105,33 +96,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let idle = activity.secondsSinceLastInput()
         let paused = config.isPaused(now: now)
         let computed = stateMachine.tick(now: now, idleSeconds: idle, isPaused: paused)
-        // Forced state from the debug panel takes precedence.
-        let state = appState.forcedIconState ?? computed
 
-        // Publish the live timer values to the debug panel.
-        appState.workDurationSeconds = stateMachine.workDuration(at: now)
+        // Publish the live timer values to the UI.
+        appState.workDurationSeconds = stateMachine.workTime
+        appState.restDurationSeconds = stateMachine.restTime
         appState.workThresholdSeconds = TimeInterval(config.workMinutes * 60)
         appState.restThresholdSeconds = TimeInterval(config.restMinutes * 60)
 
-        statusBar.setState(state)
-
-        // Log the state-machine's reason for this tick — explains WHY the
-        // icon flipped, not just that it did. `paused` events are spammy
-        // (one per second) so we only log them once when entering pause.
-        let event = stateMachine.lastEvent
-        if event != .none, event != .paused {
-            logStore.log(event.logMessage)
-        }
-
-        // Log icon state changes too, but only for meaningful transitions.
-        if state != lastState {
-            if appState.forcedIconState != nil {
-                logStore.log("图标状态：手动覆盖 → \(state == .overtime ? "超时(红)" : "工作中(白)")")
-            } else {
-                logStore.log("图标状态：\(state == .overtime ? "工作中 → 超时" : "超时 → 工作中")")
-            }
-            lastState = state
-        }
+        statusBar.setState(computed)
+        _ = lastState // keep the field so we can re-introduce state-change logging later
     }
 
     // MARK: - Config change handling
@@ -143,12 +116,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restMinutes: newConfig.restMinutes
         )
         statusBar.rebuildMenu()
-
-        if newConfig.isPaused() {
-            logStore.log("配置变更：暂停中（恢复时间 \(newConfig.pauseUntil.map { String(describing: $0) } ?? "?")）")
-        } else {
-            logStore.log("配置变更：工作 \(newConfig.workMinutes) 分钟 / 休息 \(newConfig.restMinutes) 分钟")
-        }
     }
 
     // MARK: - Smoke test

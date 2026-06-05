@@ -29,6 +29,18 @@ final class StatusBarController: NSObject {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
+        // 第一项：显示主界面
+        if mainWindow != nil {
+            let showMain = NSMenuItem(
+                title: "🪟 显示主界面",
+                action: #selector(showMainWindow(_:)),
+                keyEquivalent: ""
+            )
+            showMain.target = self
+            menu.addItem(showMain)
+            menu.addItem(.separator())
+        }
+
         // Work duration submenu
         let workItem = NSMenuItem(
             title: "工作时长：\(config.workMinutes) 分钟",
@@ -36,6 +48,7 @@ final class StatusBarController: NSObject {
             keyEquivalent: ""
         )
         workItem.submenu = makeDurationSubmenu(
+            options: ConfigStore.allowedWorkMinuteOptions,
             current: config.workMinutes,
             selectHandler: { [weak self] minutes in
                 self?.config.workMinutes = minutes
@@ -50,6 +63,7 @@ final class StatusBarController: NSObject {
             keyEquivalent: ""
         )
         restItem.submenu = makeDurationSubmenu(
+            options: ConfigStore.allowedRestMinuteOptions,
             current: config.restMinutes,
             selectHandler: { [weak self] minutes in
                 self?.config.restMinutes = minutes
@@ -79,19 +93,6 @@ final class StatusBarController: NSObject {
 
         menu.addItem(.separator())
 
-        // Debug panel
-        if debugWindow != nil {
-            let debugItem = NSMenuItem(
-                title: "🪟 打开调试面板",
-                action: #selector(openDebugPanel(_:)),
-                keyEquivalent: "d"
-            )
-            debugItem.target = self
-            menu.addItem(debugItem)
-        }
-
-        menu.addItem(.separator())
-
         // Quit
         let quitItem = NSMenuItem(
             title: "退出 腰痛",
@@ -107,12 +108,13 @@ final class StatusBarController: NSObject {
     // MARK: - Init
 
     private let config: ConfigStore
-    private let debugWindow: DebugWindowController?
+    private let mainWindow: MainWindowController?
     let statusItem: NSStatusItem
 
-    init(config: ConfigStore, debugWindow: DebugWindowController? = nil) {
+    init(config: ConfigStore,
+         mainWindow: MainWindowController? = nil) {
         self.config = config
-        self.debugWindow = debugWindow
+        self.mainWindow = mainWindow
         // Icon-only items use `squareLength`; `variableLength` collapses to
         // zero width when there's no text content.
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -158,12 +160,13 @@ final class StatusBarController: NSObject {
     )
 
     private func makeDurationSubmenu(
+        options: [Int],
         current: Int,
         selectHandler: @escaping (Int) -> Void
     ) -> NSMenu {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
-        for minutes in ConfigStore.allowedMinuteOptions {
+        for minutes in options {
             let item = NSMenuItem(
                 title: "\(minutes) 分钟",
                 action: #selector(durationPicked(_:)),
@@ -192,8 +195,8 @@ final class StatusBarController: NSObject {
         NSApp.terminate(nil)
     }
 
-    @objc private func openDebugPanel(_ sender: NSMenuItem) {
-        debugWindow?.open()
+    @objc private func showMainWindow(_ sender: NSMenuItem) {
+        mainWindow?.open()
     }
 
     // MARK: - Private types

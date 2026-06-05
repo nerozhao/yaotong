@@ -2,36 +2,30 @@ import Foundation
 
 /// The icon state the menu bar can show.
 enum StatusState: Equatable {
-    /// User is working (or resting) and has not yet hit the work threshold.
     case working
-    /// User has worked continuously past the work threshold.
     case overtime
 }
 
-/// Reason the state machine's state changed on a given tick. Surfaced to
-/// the app's log so we can explain *why* the icon flipped.
+/// Reason the state machine's state changed on a given tick.
 enum StateMachineEvent: Equatable {
-    /// No state-affecting event this tick.
     case none
-    /// User had no work session, then started one (typed / moved mouse).
+    /// Work counter just went from 0 to 1 (after launch, pause, or rest-reset).
     case workSessionStarted
-    /// Work session ended because the user rested long enough.
-    /// `idleSeconds` is how long they were idle when we detected it.
+    /// Rest counter crossed the rest threshold, resetting the work counter.
+    /// `idleSeconds` is how long the user had been idle when we detected it.
     case workSessionReset(idleSeconds: TimeInterval)
-    /// Work session crossed the overtime threshold.
-    /// `elapsed` is how long they worked in seconds.
+    /// Work counter crossed the work threshold.
+    /// `elapsed` is the current work-counter value in seconds.
     case overtimeReached(elapsed: TimeInterval)
-    /// A tick happened while paused — we report this so the log shows the
-    /// pause is being honored.
+    /// A tick happened while paused.
     case paused
 
-    /// Human-readable single-line description, suitable for `LogStore.log`.
     var logMessage: String {
         switch self {
         case .none:
             return ""
         case .workSessionStarted:
-            return "工作会话开始：检测到活动"
+            return "工作会话开始：计时器已归零"
         case .workSessionReset(let idle):
             let mins = Int(idle / 60)
             let secs = Int(idle.truncatingRemainder(dividingBy: 60))
@@ -46,26 +40,23 @@ enum StateMachineEvent: Equatable {
     }
 }
 
-/// Pure state machine. Holds no AppKit / system dependencies so it can be
-/// unit tested with synthetic clocks.
+/// State machine with **two independent counters** that run simultaneously:
 ///
-/// Inputs each tick:
-///   - `now`: the current wall-clock time
-///   - `idleSeconds`: seconds since the last input event (from CGEventSource)
-///   - `isPaused`: whether the user has paused monitoring
+/// - `workTime` counts up every tick. It is reset to 0 only when the user
+///   "rests" (idle for `restThreshold` seconds).
+/// - `restTime` counts up every tick *unless* the user is currently active
+///   (mouse / keyboard input in the last second), in which case it resets
+///   to 0.
 ///
-/// Outputs:
-///   - return value: working vs overtime
-///   - `lastEvent`: what happened this tick (for logging)
-///   - `workStart` / `workDuration`: progress through the current session
+/// The icon is `overtime` when `workTime >= workThreshold`, else `working`.
 final class StateMachine {
 
-    /// Time below which a tick is considered "the user is actively doing
-    /// something right now". Anything longer is treated as "no input".
+    /// Time below which a tick is considered "the user is currently
+    /// doing something". Anything longer is treated as "no input".
     static let activityThreshold: TimeInterval = 1.0
 
-    private(set) var workStart: Date?
-    private(set) var lastActivity: Date?
+    private(set) var workTime: TimeInterval = 0
+    private(set) var restTime: TimeInterval = 0
     private(set) var lastEvent: StateMachineEvent = .none
 
     let workThreshold: TimeInterval
@@ -80,81 +71,57 @@ final class StateMachine {
     /// `lastEvent` describes what happened (for the log / debug panel).
     @discardableResult
     func tick(now: Date, idleSeconds: TimeInterval, isPaused: Bool) -> StatusState {
-        // While paused, never advance the timer. We also forget any in-flight
-        // work session so a long pause followed by a return to work starts
-        // fresh — matches the spec: "暂停期间不计时".
         if isPaused {
-            workStart = nil
-            lastActivity = nil
+            workTime = 0
+            restTime = 0
             lastEvent = .paused
             return .working
         }
 
-        // Has the user been idle long enough to count as rested?
-        // Use `lastActivity` as the reference if we have one, otherwise fall
-        // back to `now - idleSeconds` so we can detect the very first tick.
-        let referenceActivity: Date
-        if let last = lastActivity {
-            referenceActivity = last
-        } else {
-            referenceActivity = now.addingTimeInterval(-idleSeconds)
-        }
-        let sinceActivity = now.timeIntervalSince(referenceActivity)
+        let wasActive = idleSeconds < Self.activityThreshold
+        let prevWork = workTime
+        let prevRest = restTime
 
-        if sinceActivity >= restThreshold {
-            // User has been away long enough — treat as rested, reset work.
-            workStart = nil
-            lastActivity = referenceActivity
-            lastEvent = .workSessionReset(idleSeconds: sinceActivity)
+        // Both counters tick up. The rest counter is re-zeroed on activity;
+        // when not active, we just adopt the system's view of "how long has
+        // the user been idle" — that way a long idle period is picked up
+        // even if some ticks were coalesced or missed.
+        workTime += 1
+        if wasActive {
+            restTime = 0
+        } else {
+            restTime = idleSeconds
+        }
+
+        // Rest crossed threshold → work resets to 0.
+        if prevRest < restThreshold && restTime >= restThreshold {
+            workTime = 0
+            lastEvent = .workSessionReset(idleSeconds: restTime)
             return .working
         }
 
-        // Is the user "active" this very second? If so, mark them active and
-        // (re)start the work session if needed.
-        if idleSeconds < Self.activityThreshold {
-            lastActivity = now
-            if workStart == nil {
-                workStart = now
-                lastEvent = .workSessionStarted
-            } else {
-                lastEvent = .none
-            }
-        } else {
-            // The user is within the rest window but not actively typing this
-            // second. Don't extend lastActivity — but don't reset workStart
-            // either, since the user is still inside the "work session" we
-            // already started.
-            //
-            // The first tick after launch has no `lastActivity` yet; seed it
-            // so subsequent rest calculations have a reference point.
-            if lastActivity == nil {
-                lastActivity = now
-            }
-            lastEvent = .none
-        }
-
-        let elapsed = now.timeIntervalSince(workStart ?? now)
-        if elapsed >= workThreshold {
-            // Only fire the overtime event the tick we cross the threshold;
-            // subsequent ticks while still over the threshold are "none"
-            // so we don't spam the log.
-            if lastEvent != .overtimeReached(elapsed: elapsed) {
-                lastEvent = .overtimeReached(elapsed: elapsed)
-            }
+        // Work crossed threshold → overtime.
+        if prevWork < workThreshold && workTime >= workThreshold {
+            lastEvent = .overtimeReached(elapsed: workTime)
             return .overtime
         }
-        return .working
+
+        // Work just started ticking (from 0 to 1) — either at launch,
+        // after pause, or after a rest-reset.
+        if prevWork == 0 && workTime == 1 {
+            lastEvent = .workSessionStarted
+            return .working
+        }
+
+        lastEvent = .none
+        return workTime >= workThreshold ? .overtime : .working
     }
 
-    /// Current work duration in seconds (0 if no session in progress).
-    var workDuration: TimeInterval {
-        guard let start = workStart else { return 0 }
-        return max(0, Date().timeIntervalSince(start))
-    }
-
-    /// Work duration computed against an explicit "now" — for testing.
-    func workDuration(at now: Date) -> TimeInterval {
-        guard let start = workStart else { return 0 }
-        return max(0, now.timeIntervalSince(start))
+    /// Reset both counters (e.g. on launch or when the work/rest
+    /// thresholds change and we recreate the machine).
+    func reset() {
+        workTime = 0
+        restTime = 0
+        lastEvent = .none
     }
 }

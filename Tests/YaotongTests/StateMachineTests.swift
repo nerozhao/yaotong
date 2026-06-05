@@ -47,7 +47,8 @@ final class StateMachineTests: XCTestCase {
         let tAfter = t0.addingTimeInterval(31 * 60 + 11 * 60)
         let state = sm.tick(now: tAfter, idleSeconds: 11 * 60, isPaused: false)
         XCTAssertEqual(state, .working)
-        XCTAssertEqual(sm.workStart, nil)
+        // Rest crossed threshold → work was reset to 0.
+        XCTAssertEqual(sm.workTime, 0)
     }
 
     // MARK: - Pause
@@ -64,7 +65,8 @@ final class StateMachineTests: XCTestCase {
         // and not have advanced any work session.
         let tLater = t0.addingTimeInterval(10 * 60 * 60)
         XCTAssertEqual(sm.tick(now: tLater, idleSeconds: 10 * 60 * 60, isPaused: true), .working)
-        XCTAssertEqual(sm.workStart, nil)
+        XCTAssertEqual(sm.workTime, 0)
+        XCTAssertEqual(sm.restTime, 0)
     }
 
     func testUnpauseStartsFreshSession() {
@@ -120,36 +122,29 @@ final class StateMachineTests: XCTestCase {
     func testRestingBeyondThresholdEmitsWorkSessionReset() {
         let sm = StateMachine(workMinutes: 30, restMinutes: 10)
         let t0 = Date(timeIntervalSince1970: 0)
-        // Work for 31 minutes to get into overtime. The last active tick is
-        // at i=1859 (loop runs 0..<1860).
+        // Work for 31 minutes (1860 active ticks).
         for i in 0..<(31 * 60) {
             _ = sm.tick(now: t0.addingTimeInterval(TimeInterval(i)), idleSeconds: 0, isPaused: false)
         }
-        // Tick at t=2520 (11 min later); idle for 12 min vs. lastActivity at
-        // t=1859, so sinceActivity = 661s.
-        let tickAt: TimeInterval = 31 * 60 + 11 * 60
+        // Now report 42 minutes of idle — crosses the 10-min rest threshold.
         let state = sm.tick(
-            now: t0.addingTimeInterval(tickAt),
-            idleSeconds: tickAt,
+            now: t0.addingTimeInterval(TimeInterval(31 * 60 + 42 * 60)),
+            idleSeconds: 42 * 60,
             isPaused: false
         )
         XCTAssertEqual(state, .working)
-        XCTAssertEqual(sm.lastEvent, .workSessionReset(idleSeconds: 661))
+        XCTAssertEqual(sm.lastEvent, .workSessionReset(idleSeconds: 42 * 60))
     }
 
     func testOvertimeThresholdEmitsOvertimeReached() {
         let sm = StateMachine(workMinutes: 30, restMinutes: 10)
         let t0 = Date(timeIntervalSince1970: 0)
-        // Cross the 30-minute threshold.
+        // Run 30 minutes of activity. The 30*60-th tick crosses the threshold.
         for i in 0..<(30 * 60) {
             _ = sm.tick(now: t0.addingTimeInterval(TimeInterval(i)), idleSeconds: 0, isPaused: false)
         }
-        let state = sm.tick(
-            now: t0.addingTimeInterval(TimeInterval(30 * 60)),
-            idleSeconds: 0,
-            isPaused: false
-        )
-        XCTAssertEqual(state, .overtime)
+        // After 30*60 ticks, workTime has crossed to 1800 exactly on the last
+        // tick — the overtimeReached event was emitted at that crossing.
         XCTAssertEqual(sm.lastEvent, .overtimeReached(elapsed: 30 * 60))
     }
 
@@ -164,7 +159,7 @@ final class StateMachineTests: XCTestCase {
     func testEventLogMessages() {
         XCTAssertEqual(
             StateMachineEvent.workSessionStarted.logMessage,
-            "工作会话开始：检测到活动"
+            "工作会话开始：计时器已归零"
         )
         XCTAssertEqual(
             StateMachineEvent.workSessionReset(idleSeconds: 615).logMessage,
@@ -178,13 +173,21 @@ final class StateMachineTests: XCTestCase {
         XCTAssertEqual(StateMachineEvent.none.logMessage, "")
     }
 
-    func testWorkDurationAt() {
+    func testWorkTimeAdvancesWithTicks() {
         let sm = StateMachine(workMinutes: 30, restMinutes: 10)
         let t0 = Date(timeIntervalSince1970: 0)
-        // No session yet — duration is 0.
-        XCTAssertEqual(sm.workDuration(at: t0), 0)
+        // Initially both counters are 0.
+        XCTAssertEqual(sm.workTime, 0)
+        XCTAssertEqual(sm.restTime, 0)
         _ = sm.tick(now: t0, idleSeconds: 0, isPaused: false)
-        // After a tick, the session started; duration matches the elapsed time.
-        XCTAssertEqual(sm.workDuration(at: t0.addingTimeInterval(120)), 120)
+        // After one active tick: workTime=1, restTime=0.
+        XCTAssertEqual(sm.workTime, 1)
+        XCTAssertEqual(sm.restTime, 0)
+        // Second tick — user is now idle for 5 sec. restTime adopts the
+        // system's idle reading (5), not 0+1=1. This is how the model
+        // stays correct across coalesced or missed ticks.
+        _ = sm.tick(now: t0.addingTimeInterval(1), idleSeconds: 5, isPaused: false)
+        XCTAssertEqual(sm.workTime, 2)
+        XCTAssertEqual(sm.restTime, 5)
     }
 }

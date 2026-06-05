@@ -50,10 +50,12 @@ enum SmokeTest {
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let config = ConfigStore(defaults: defaults)
-        let logStore = LogStore()
         let appState = AppState()
-        let debugWindow = DebugWindowController(config: config, logStore: logStore, appState: appState)
-        let controller = StatusBarController(config: config, debugWindow: debugWindow)
+        let mainWindow = MainWindowController(config: config, appState: appState)
+        let controller = StatusBarController(
+            config: config,
+            mainWindow: mainWindow
+        )
 
         emit("=== 腰痛 smoke test ===")
 
@@ -67,8 +69,8 @@ enum SmokeTest {
             (controller.statusItem.menu?.items.count ?? 0) >= 4
         )
         check(
-            "first launch: debug panel menu item present",
-            (controller.statusItem.menu?.items ?? []).contains(where: { $0.title.contains("调试面板") })
+            "first launch: '显示主界面' menu item is present at the top",
+            (controller.statusItem.menu?.items.first?.title ?? "").contains("显示主界面")
         )
 
         // ---- §6.3: 持续使用 30 分钟后图标变红
@@ -211,8 +213,8 @@ enum SmokeTest {
             isPaused: config.isPaused(now: pauseStart)
         )
         check(
-            "pause 1h: tick during pause reports .working and clears workStart",
-            pauseTick == .working && sm.workStart == nil
+            "pause 1h: tick during pause reports .working and zeroes both counters",
+            pauseTick == .working && sm.workTime == 0 && sm.restTime == 0
         )
         let unpauseTime = pauseStart.addingTimeInterval(2 * 60 * 60)
         let unpauseTick = sm.tick(
@@ -258,22 +260,6 @@ enum SmokeTest {
         check(
             "debug: forcing .working produces a non-red icon",
             SmokeTest.dominantRedness(of: controller.statusItem.button?.image) < 0.1
-        )
-
-        // ---- Debug panel: LogStore buffers messages
-        logStore.log("smoke test entry 1")
-        logStore.log("smoke test entry 2", level: .warn)
-        // log() is async via a writer queue → main-queue publish. We can't
-        // `Thread.sleep` here — that would block the main run loop and
-        // starve the dispatch. Pump the run loop until the entries land.
-        let deadline = Date().addingTimeInterval(2.0)
-        while logStore.entries.count < 2 && Date() < deadline {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        }
-        check("debug: LogStore has both entries", logStore.entries.count == 2)
-        check(
-            "debug: LogStore preserved the level",
-            logStore.entries.contains(where: { $0.level == .warn })
         )
 
         emit("=== \(passed) passed, \(failed) failed ===")
