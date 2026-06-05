@@ -123,14 +123,17 @@ final class StatusBarController: NSObject {
 
     // MARK: - Private helpers
 
-    private static let symbolName = "figure.stand"
+    /// The simplest possible icon: a solid filled circle. Its color
+    /// (white / red) is the only signal the user gets.
+    private static let symbolName = "circle.fill"
 
     /// Working-state icon: template, system label color (white on dark menu bar).
     private static func workingIcon() -> NSImage {
         let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "腰痛")
             ?? NSImage()
-        image.isTemplate = true
-        return image
+        let sized = image.withSymbolConfiguration(Self.iconConfig) ?? image
+        sized.isTemplate = true
+        return sized
     }
 
     /// Overtime-state icon: red, baked into the image via a palette config.
@@ -140,11 +143,21 @@ final class StatusBarController: NSObject {
     private static func overtimeIcon() -> NSImage {
         let base = NSImage(systemSymbolName: symbolName, accessibilityDescription: "腰痛")
             ?? NSImage()
-        let colorConfig = NSImage.SymbolConfiguration(paletteColors: [.systemRed])
-        let tinted = base.withSymbolConfiguration(colorConfig) ?? base
+        let combined = Self.iconConfig.applying(
+            NSImage.SymbolConfiguration(paletteColors: [.systemRed])
+        )
+        let tinted = base.withSymbolConfiguration(combined) ?? base
         tinted.isTemplate = false
         return tinted
     }
+
+    /// Larger-than-default point size so the circle is easy to spot in the
+    /// crowded right-hand menu bar area. 20pt is a touch bigger than the
+    /// surrounding system icons (18pt).
+    private static let iconConfig = NSImage.SymbolConfiguration(
+        pointSize: 20,
+        weight: .regular
+    )
 
     private func makeDurationSubmenu(
         current: Int,

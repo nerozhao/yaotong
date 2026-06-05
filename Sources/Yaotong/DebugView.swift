@@ -54,39 +54,86 @@ private struct ConfigTab: View {
     @ObservedObject var appState: AppState
 
     var body: some View {
-        Form {
-            Section("工作时长") {
-                Picker("", selection: $config.workMinutes) {
-                    ForEach(ConfigStore.allowedMinuteOptions, id: \.self) { m in
-                        Text("\(m) 分钟").tag(m)
+        VStack(alignment: .leading, spacing: 18) {
+            timerSection
+            Form {
+                Section("工作时长") {
+                    Picker("", selection: $config.workMinutes) {
+                        ForEach(ConfigStore.allowedMinuteOptions, id: \.self) { m in
+                            Text("\(m) 分钟").tag(m)
+                        }
                     }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-            }
-            Section("休息时长") {
-                Picker("", selection: $config.restMinutes) {
-                    ForEach(ConfigStore.allowedMinuteOptions, id: \.self) { m in
-                        Text("\(m) 分钟").tag(m)
+                Section("休息时长") {
+                    Picker("", selection: $config.restMinutes) {
+                        ForEach(ConfigStore.allowedMinuteOptions, id: \.self) { m in
+                            Text("\(m) 分钟").tag(m)
+                        }
                     }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-            }
-            Section("暂停") {
-                if let until = config.pauseUntil, config.isPaused() {
-                    Text("暂停中，恢复时间：\(pauseEndString(until))")
-                    Button("取消暂停") {
-                        appState.objectWillChange.send()
-                        config.pauseUntil = nil
-                    }
-                } else {
-                    Text("未暂停")
-                    Button("暂停 1 小时") {
-                        config.pauseUntil = Date().addingTimeInterval(ConfigStore.pauseDuration)
+                Section("暂停") {
+                    if let until = config.pauseUntil, config.isPaused() {
+                        Text("暂停中，恢复时间：\(pauseEndString(until))")
+                        Button("取消暂停") {
+                            appState.objectWillChange.send()
+                            config.pauseUntil = nil
+                        }
+                    } else {
+                        Text("未暂停")
+                        Button("暂停 1 小时") {
+                            config.pauseUntil = Date().addingTimeInterval(ConfigStore.pauseDuration)
+                        }
                     }
                 }
             }
         }
         .padding(20)
+    }
+
+    private var timerSection: some View {
+        let elapsed = appState.workDurationSeconds
+        let threshold = max(1, appState.workThresholdSeconds)
+        let isOvertime = elapsed > threshold
+        let progress = min(1.0, elapsed / threshold)
+        return GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(formatMMSS(elapsed))
+                        .font(.system(size: 36, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(isOvertime ? .red : .primary)
+                    Text("/ \(formatMMSS(threshold))")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Spacer()
+                    if isOvertime {
+                        Text("已超时")
+                            .font(.headline)
+                            .foregroundStyle(.red)
+                    } else {
+                        Text("工作中")
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                ProgressView(value: progress)
+                    .tint(isOvertime ? .red : .accentColor)
+            }
+            .padding(8)
+        } label: {
+            Label("工作计时", systemImage: "clock")
+                .font(.headline)
+        }
+    }
+
+    private func formatMMSS(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        let m = total / 60
+        let s = total % 60
+        return String(format: "%02d:%02d", m, s)
     }
 
     private func pauseEndString(_ date: Date) -> String {

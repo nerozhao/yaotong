@@ -8,6 +8,44 @@ enum StatusState: Equatable {
     case overtime
 }
 
+/// Reason the state machine's state changed on a given tick. Surfaced to
+/// the app's log so we can explain *why* the icon flipped.
+enum StateMachineEvent: Equatable {
+    /// No state-affecting event this tick.
+    case none
+    /// User had no work session, then started one (typed / moved mouse).
+    case workSessionStarted
+    /// Work session ended because the user rested long enough.
+    /// `idleSeconds` is how long they were idle when we detected it.
+    case workSessionReset(idleSeconds: TimeInterval)
+    /// Work session crossed the overtime threshold.
+    /// `elapsed` is how long they worked in seconds.
+    case overtimeReached(elapsed: TimeInterval)
+    /// A tick happened while paused — we report this so the log shows the
+    /// pause is being honored.
+    case paused
+
+    /// Human-readable single-line description, suitable for `LogStore.log`.
+    var logMessage: String {
+        switch self {
+        case .none:
+            return ""
+        case .workSessionStarted:
+            return "工作会话开始：检测到活动"
+        case .workSessionReset(let idle):
+            let mins = Int(idle / 60)
+            let secs = Int(idle.truncatingRemainder(dividingBy: 60))
+            return "休息判定：已空闲 \(mins)分\(secs)秒，重置工作计时器"
+        case .overtimeReached(let elapsed):
+            let mins = Int(elapsed / 60)
+            let secs = Int(elapsed.truncatingRemainder(dividingBy: 60))
+            return "超时判定：已工作 \(mins)分\(secs)秒，达到工作阈值"
+        case .paused:
+            return "暂停中：跳过本次 tick"
+        }
+    }
+}
+
 /// Pure state machine. Holds no AppKit / system dependencies so it can be
 /// unit tested with synthetic clocks.
 ///
@@ -17,9 +55,9 @@ enum StatusState: Equatable {
 ///   - `isPaused`: whether the user has paused monitoring
 ///
 /// Outputs:
-///   - `state`: working vs overtime
-///   - `workDuration`: how long the current work session has lasted (0 if
-///     the user is currently resting, i.e. workStart is nil)
+///   - return value: working vs overtime
+///   - `lastEvent`: what happened this tick (for logging)
+///   - `workStart` / `workDuration`: progress through the current session
 final class StateMachine {
 
     /// Time below which a tick is considered "the user is actively doing
@@ -28,6 +66,7 @@ final class StateMachine {
 
     private(set) var workStart: Date?
     private(set) var lastActivity: Date?
+    private(set) var lastEvent: StateMachineEvent = .none
 
     let workThreshold: TimeInterval
     let restThreshold: TimeInterval
@@ -37,7 +76,8 @@ final class StateMachine {
         self.restThreshold = TimeInterval(restMinutes * 60)
     }
 
-    /// Apply a tick. Returns the resulting state.
+    /// Apply a tick. Returns the resulting state. After the call,
+    /// `lastEvent` describes what happened (for the log / debug panel).
     @discardableResult
     func tick(now: Date, idleSeconds: TimeInterval, isPaused: Bool) -> StatusState {
         // While paused, never advance the timer. We also forget any in-flight
@@ -46,6 +86,7 @@ final class StateMachine {
         if isPaused {
             workStart = nil
             lastActivity = nil
+            lastEvent = .paused
             return .working
         }
 
@@ -64,6 +105,7 @@ final class StateMachine {
             // User has been away long enough — treat as rested, reset work.
             workStart = nil
             lastActivity = referenceActivity
+            lastEvent = .workSessionReset(idleSeconds: sinceActivity)
             return .working
         }
 
@@ -73,6 +115,9 @@ final class StateMachine {
             lastActivity = now
             if workStart == nil {
                 workStart = now
+                lastEvent = .workSessionStarted
+            } else {
+                lastEvent = .none
             }
         } else {
             // The user is within the rest window but not actively typing this
@@ -85,15 +130,31 @@ final class StateMachine {
             if lastActivity == nil {
                 lastActivity = now
             }
+            lastEvent = .none
         }
 
         let elapsed = now.timeIntervalSince(workStart ?? now)
-        return elapsed >= workThreshold ? .overtime : .working
+        if elapsed >= workThreshold {
+            // Only fire the overtime event the tick we cross the threshold;
+            // subsequent ticks while still over the threshold are "none"
+            // so we don't spam the log.
+            if lastEvent != .overtimeReached(elapsed: elapsed) {
+                lastEvent = .overtimeReached(elapsed: elapsed)
+            }
+            return .overtime
+        }
+        return .working
     }
 
     /// Current work duration in seconds (0 if no session in progress).
     var workDuration: TimeInterval {
         guard let start = workStart else { return 0 }
         return max(0, Date().timeIntervalSince(start))
+    }
+
+    /// Work duration computed against an explicit "now" — for testing.
+    func workDuration(at now: Date) -> TimeInterval {
+        guard let start = workStart else { return 0 }
+        return max(0, now.timeIntervalSince(start))
     }
 }

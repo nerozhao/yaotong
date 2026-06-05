@@ -108,10 +108,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Forced state from the debug panel takes precedence.
         let state = appState.forcedIconState ?? computed
 
+        // Publish the live timer values to the debug panel.
+        appState.workDurationSeconds = stateMachine.workDuration(at: now)
+        appState.workThresholdSeconds = TimeInterval(config.workMinutes * 60)
+        appState.restThresholdSeconds = TimeInterval(config.restMinutes * 60)
+
         statusBar.setState(state)
 
-        // Log state transitions and pause start/end events (don't spam on
-        // every tick).
+        // Log the state-machine's reason for this tick — explains WHY the
+        // icon flipped, not just that it did. `paused` events are spammy
+        // (one per second) so we only log them once when entering pause.
+        let event = stateMachine.lastEvent
+        if event != .none, event != .paused {
+            logStore.log(event.logMessage)
+        }
+
+        // Log icon state changes too, but only for meaningful transitions.
         if state != lastState {
             if appState.forcedIconState != nil {
                 logStore.log("图标状态：手动覆盖 → \(state == .overtime ? "超时(红)" : "工作中(白)")")
