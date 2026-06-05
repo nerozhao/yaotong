@@ -44,6 +44,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // Provide a custom Dock icon. LSUIElement apps have no icon
+        // by default, so when we promote to .regular (i.e., when the
+        // main window opens) the Dock would show a generic
+        // placeholder. Setting `applicationIconImage` overrides that
+        // with our generated red-circle-on-white icon.
+        NSApp.applicationIconImage = AppIcon.make()
+
         // Sentinel so the user can confirm logging works from Console.app
         // (filter by `process:Yaotong` or by `subsystem:local.yaotong`).
         os_log("腰痛启动 — 移动鼠标/按键/滚动后会在此 subsystem 出现活动日志",

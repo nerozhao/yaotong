@@ -30,6 +30,13 @@ mkdir -p "${APP_DIR}/Contents/Resources"
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 cp Resources/Info.plist "${APP_DIR}/Contents/Info.plist"
 
+# Generate the Dock icon and drop it into Resources. The Swift script
+# is idempotent — running it twice produces a byte-identical PNG — so
+# we re-run every build and skip the cache file.
+echo "==> Generating AppIcon.png"
+swift Resources/generate_icon.swift
+cp Resources/AppIcon.png "${APP_DIR}/Contents/Resources/AppIcon.png"
+
 # Ad-hoc sign so the menu bar app can run on Apple Silicon without quarantine issues.
 codesign --force --deep --sign - "${APP_DIR}" 2>/dev/null || true
 

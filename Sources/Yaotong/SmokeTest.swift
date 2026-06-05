@@ -59,6 +59,15 @@ enum SmokeTest {
 
         emit("=== 腰痛 smoke test ===")
 
+        // ---- App icon: dock entry should not be the generic placeholder
+        AppDelegate_setApplicationIconImage()
+        check(
+            "first launch: applicationIconImage is set (Dock won't show generic placeholder)",
+            NSApp.applicationIconImage != nil && NSApp.applicationIconImage!.size.width >= 256
+        )
+
+        // ---- §6.3: 首次启动能看到菜单栏图标
+
         // ---- §6.3: 首次启动能看到菜单栏图标
         check(
             "first launch: status item registered with the system status bar",
@@ -148,6 +157,18 @@ enum SmokeTest {
         check(
             "click icon: menu has a pause/start toggle item",
             menuTitles.contains(where: { $0.contains("暂停腰痛") || $0.contains("开始腰痛") })
+        )
+        // No emoji in menu titles — the system renders them in the
+        // menu font and they look out of place next to the Chinese
+        // labels.
+        let emojiSet: Set<Character> = ["🪟", "🔄", "⏸", "▶", "🚪"]
+        let titlesWithEmoji = menuTitles.filter { title in
+            title.contains(where: { emojiSet.contains($0) })
+        }
+        check(
+            "click icon: no emoji in any menu title",
+            titlesWithEmoji.isEmpty,
+            "found: \(titlesWithEmoji)"
         )
         check(
             "click icon: menu has '重启 腰痛' item",
@@ -289,6 +310,15 @@ enum SmokeTest {
     /// Captured by `AppDelegate.cleanupAndExit` so it can propagate the
     /// smoke-test result as the process's exit code.
     static var lastExitCode: Int32 = 0
+
+    // MARK: - Helpers
+
+    /// The smoke test bypasses `AppDelegate.applicationDidFinishLaunching`,
+    /// so we set the Dock icon here too. Same code as the production
+    /// path — both call `AppIcon.make()`.
+    private static func AppDelegate_setApplicationIconImage() {
+        NSApp.applicationIconImage = AppIcon.make()
+    }
 
     // MARK: - Image inspection
 

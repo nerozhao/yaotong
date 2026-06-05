@@ -15,7 +15,8 @@
 | 包管理 | Swift Package Manager |
 | 配置存储 | `UserDefaults`（`yaotong.workMinutes` / `yaotong.restMinutes`）—— **`isPaused` 是纯内存**，不持久化 |
 | 活动检测 | `CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: ...)`，1 call/tick 基线 |
-| 图标 | SF Symbol `circle.fill`，18pt，白色 template / 红色 `paletteColors: [.systemRed]`，**构造一次缓存复用** |
+| 菜单栏图标 | SF Symbol `circle.fill`，18pt，白色 template / 红色 `paletteColors: [.systemRed]`，**构造一次缓存复用** |
+| Dock 图标 | `Resources/AppIcon.png`（构建时由 `Resources/generate_icon.swift` 生成）—— 1024×1024 白底圆角矩形 + 蓝色填充圆（80% 直径，10% 内边距）。`Info.plist` 配 `CFBundleIconFile = AppIcon`，macOS 自动 downscale 到各 Dock 尺寸 |
 | 日志 | `os_log`，subsystem `local.yaotong`，category `activity`，`.default` 级别；活动类型 5s 节流 |
 
 ---
@@ -152,6 +153,11 @@ func setState(_ state: StatusState) {
 
 **Dock 图标随窗口状态切换**：`Info.plist` 把默认 `LSUIElement=true`（不显示在 Dock）。`MainWindowController.open()` 里把 activation policy 切到 `.regular`（Dock 显示图标，Cmd-Tab 也能切到）；`NSWindow.willCloseNotification` 监听关窗，切回 `.accessory`（回到纯菜单栏模式）。结果：菜单栏永远在，主窗口打开时 Dock 有图标，关闭后图标消失。
 
+**Dock 图标本身**：构建时由 `Resources/generate_icon.swift` 渲染并写到 `Resources/AppIcon.png`，`build.sh` 拷进 `.app/Contents/Resources/`。`Info.plist` 配 `CFBundleIconFile = AppIcon`，macOS 把它烧成 Dock / Finder / Cmd-Tab 切换器显示的图标。`AppIcon.make()` 同步存在作为运行时兜底（`NSApp.applicationIconImage`），不过对 .app bundle 来说 bundle 自带的 PNG 是主路径。
+
+**为什么用蓝色不用红色**：菜单栏超时图标保留红色（警报语义），Dock 图标是品牌色常驻，红色太刺眼。`systemBlue` 跟"健康提醒"主题更合，也跟 macOS 自身的强调色一致。
+
+
 **重启流程**：
 ```swift
 func restartApp() {
@@ -227,7 +233,9 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 22 集成测试
 - `MainWindowController`：启动后自动弹出，SwiftUI + AppKit 桥接；**Dock 图标随窗口状态切换**（`.regular` ↔ `.accessory`）
 - 状态机事件（`workSessionStarted` / `workSessionReset` / `overtimeReached`）通过 `os_log` 写入 `local.yaotong` subsystem
 - **重启入口**：主界面 + 菜单的"重启 腰痛"按钮；`sh -c "sleep 0.3 && open -n <bundle>" + NSApp.terminate`
+- **Dock 图标**：构建时由 `Resources/generate_icon.swift` 生成 `AppIcon.png`（白底 + 蓝色填充圆，80% 直径）→ `Info.plist` `CFBundleIconFile = AppIcon` → 烧进 .app bundle
 - **暂停不持久化**：`isPaused` 是纯内存属性，每次启动默认 `false`（运行中）
+- **休息时长选项**：`[1, 2, 5, 10, 15, 20, 30, 45, 60]` 分钟（多了 2 分钟档）
 - 活动类型日志（`鼠标点击` / `拖拽` / `键盘` / `修饰键` / `系统键` / `滚轮` / `移动` / `触摸板`）5 秒节流
 - 工作时间窗口：默认 08:30–18:00；窗口外自动暂停；"开始腰痛" 可手动启动一次；进入窗口时挂容错门
 
@@ -238,6 +246,7 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 22 集成测试
 - `MainWindowController.refresh()` 空操作
 - `ActivityProviding` 协议（无第二个实现者）
 - `ActivityMonitor.secondsSinceLastInput()` / `latestActivity()` 双方法（合并成 `sample()`）
+- **菜单 emoji**（`🪟` / `🔄` / `⏸` / `▶` / `🚪`）—— 系统字体下渲染与中文标签不协调；菜单项改为纯文字
 
 **性能调整**
 - 1Hz Timer tolerance 0.1s

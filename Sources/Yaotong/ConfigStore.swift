@@ -19,7 +19,7 @@ final class ConfigStore: ObservableObject {
 
     /// Options for the rest threshold. Min 1 minute so the user can
     /// quickly test the "rest" path without waiting 10 minutes.
-    static let allowedRestMinuteOptions: [Int] = [1, 5, 10, 15, 20, 30, 45, 60]
+    static let allowedRestMinuteOptions: [Int] = [1, 2, 5, 10, 15, 20, 30, 45, 60]
 
     // MARK: - Keys
 

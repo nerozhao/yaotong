@@ -21,7 +21,7 @@ final class StatusBarController: NSObject {
         // 第一项：显示主界面
         if mainWindow != nil {
             let showMain = NSMenuItem(
-                title: "🪟 显示主界面",
+                title: "显示主界面",
                 action: #selector(showMainWindow(_:)),
                 keyEquivalent: ""
             )
@@ -63,7 +63,7 @@ final class StatusBarController: NSObject {
         menu.addItem(.separator())
 
         // Pause / resume (pure toggle, no auto-resume)
-        let pauseTitle = config.isPaused ? "▶ 开始腰痛" : "⏸ 暂停腰痛"
+        let pauseTitle = config.isPaused ? "开始腰痛" : "暂停腰痛"
         let pauseItem = NSMenuItem(
             title: pauseTitle,
             action: #selector(togglePause(_:)),
@@ -76,7 +76,7 @@ final class StatusBarController: NSObject {
 
         // Restart
         let restartItem = NSMenuItem(
-            title: "🔄 重启 腰痛",
+            title: "重启 腰痛",
             action: #selector(restartApp(_:)),
             keyEquivalent: ""
         )
