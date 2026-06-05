@@ -293,7 +293,12 @@ enum SmokeTest {
                 isPaused: false
             )
         }
-        XCTAssertEqual(sm.workTime, 20 * 60)
+        // Sanity-check the precondition: 20 min of active work should
+        // have brought workTime up to 20*60.
+        check(
+            "sleep/wake precondition: 20 min active work is reflected in workTime",
+            sm.workTime == 20 * 60
+        )
         // Simulate the wake handler firing.
         sm.handleSleepWake()
         check(
