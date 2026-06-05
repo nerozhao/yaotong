@@ -25,7 +25,13 @@ fi
 # with what the app actually reports).
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
             "${APP_BUNDLE}/Contents/Info.plist")
-DMG_NAME="${APP_DISPLAY_NAME}-${VERSION}.dmg"
+# DMG filename uses the ASCII `APP_NAME` (English), not the
+# Chinese `APP_DISPLAY_NAME`. GitHub's release-asset upload path
+# drops / mangles non-ASCII bytes in filenames (the asset comes
+# out as `-0.3.0.dmg` instead of `腰痛-0.3.0.dmg`). The .app
+# bundle inside is still `腰痛.app` — only the *delivery
+# filename* needs to be ASCII-safe.
+DMG_NAME="${APP_NAME}-${VERSION}.dmg"
 DMG_PATH="build/${DMG_NAME}"
 STAGING="build/dmg-staging"
 

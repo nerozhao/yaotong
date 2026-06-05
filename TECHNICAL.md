@@ -278,6 +278,7 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 集成测试
 - **Swift 6 @MainActor**：`ObservableObject` + Timer callback 的组合需要 `MainActor.assumeIsolated` 显式标注，否则 Swift 6 严格并发检查会报错。
 - **onChange API**：`onChange(of:initial:_:)` 是 macOS 14+，目标 macOS 12 用旧签名 `onChange(of:) { newValue in ... }`。
 - **窗口位置**：首次打开 NSWindow 时若用 `center()`，在多屏配置下可能定位到屏外 → 改用 `NSScreen.main.visibleFrame` 手动算中心。
+- **GitHub Release asset 文件名不能用中文**：`gh release upload build/腰痛-0.3.0.dmg` 上去后，asset 在页面和下载 URL 里都变成 `-0.3.0.dmg`——非 ASCII 字节被 GitHub 的 asset 路径处理吞掉。`dmg.sh` 默认用 `${APP_NAME}-${VERSION}.dmg`（英文 `Yaotong-…`），**不要** 改成 `${APP_DISPLAY_NAME}-${VERSION}.dmg`（中文 `腰痛-…`）。`.app` bundle 本身保持 `腰痛.app` 不动——只有投递用的 DMG 文件名需要 ASCII-safe。
 
 ---
 
