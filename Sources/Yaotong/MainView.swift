@@ -13,17 +13,20 @@ struct MainView: View {
     private let onQuit: () -> Void
     private let onRestart: () -> Void
     private let onCheckForUpdates: () -> Void
+    private let onOpenSource: () -> Void
 
     init(config: ConfigStore,
          appState: AppState,
          onQuit: @escaping () -> Void = {},
          onRestart: @escaping () -> Void = {},
-         onCheckForUpdates: @escaping () -> Void = {}) {
+         onCheckForUpdates: @escaping () -> Void = {},
+         onOpenSource: @escaping () -> Void = {}) {
         self.config = config
         self.appState = appState
         self.onQuit = onQuit
         self.onRestart = onRestart
         self.onCheckForUpdates = onCheckForUpdates
+        self.onOpenSource = onOpenSource
     }
 
     var body: some View {
@@ -37,6 +40,7 @@ struct MainView: View {
             pauseSection
             HStack {
                 Button("检查更新…") { onCheckForUpdates() }
+                Button("源码") { onOpenSource() }
                 Spacer()
                 Button("重启 腰痛") { onRestart() }
                 Button("退出 腰痛", role: .destructive) { onQuit() }

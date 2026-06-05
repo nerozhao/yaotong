@@ -55,7 +55,15 @@ final class UpdateCheckerTests: XCTestCase {
         {
           "tag_name": "v0.3.0",
           "html_url": "https://github.com/nerozhao/yaotong/releases/tag/v0.3.0",
-          "body": "## What's new\\n- thing one\\n- thing two"
+          "body": "## What's new\\n- thing one\\n- thing two",
+          "assets": [
+            {
+              "name": "Yaotong-0.3.0.dmg",
+              "browser_download_url": "https://github.com/nerozhao/yaotong/releases/download/v0.3.0/Yaotong-0.3.0.dmg",
+              "size": 180000,
+              "content_type": "application/x-apple-diskimage"
+            }
+          ]
         }
         """.data(using: .utf8)!
         let info = try UpdateChecker.parseRelease(json)
@@ -63,6 +71,64 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertEqual(info.htmlURL.absoluteString, "https://github.com/nerozhao/yaotong/releases/tag/v0.3.0")
         XCTAssertNotNil(info.notes)
         XCTAssertTrue(info.notes!.contains("thing one"))
+        XCTAssertEqual(info.dmgURL?.absoluteString, "https://github.com/nerozhao/yaotong/releases/download/v0.3.0/Yaotong-0.3.0.dmg")
+    }
+
+    func testParseReleasePicksDmgFromMultipleAssets() throws {
+        // Realistic payload: GitHub also emits `.sig`/`.sigstore`
+        // signature files alongside the .dmg. The parser must
+        // pick the .dmg, not the first asset.
+        let json = """
+        {
+          "tag_name": "v0.3.0",
+          "html_url": "https://example.com",
+          "assets": [
+            { "name": "Yaotong-0.3.0.dmg.sig", "browser_download_url": "https://example.com/.sig" },
+            { "name": "Yaotong-0.3.0.dmg", "browser_download_url": "https://example.com/app.dmg" },
+            { "name": "SHA256SUMS", "browser_download_url": "https://example.com/sums" }
+          ]
+        }
+        """.data(using: .utf8)!
+        let info = try UpdateChecker.parseRelease(json)
+        XCTAssertEqual(info.dmgURL?.absoluteString, "https://example.com/app.dmg")
+    }
+
+    func testParseReleaseReturnsNilDmgWhenNoAsset() throws {
+        // Source-only release (e.g. a tarball). The UI then
+        // hides the "下载并安装" button.
+        let json = """
+        {
+          "tag_name": "v0.3.0",
+          "html_url": "https://example.com",
+          "assets": [
+            { "name": "yaotong-0.3.0.tar.gz", "browser_download_url": "https://example.com/tar" }
+          ]
+        }
+        """.data(using: .utf8)!
+        let info = try UpdateChecker.parseRelease(json)
+        XCTAssertNil(info.dmgURL)
+    }
+
+    func testParseReleaseDmgURLIsCaseInsensitive() throws {
+        // `.DMG` (rare but legal) should still match.
+        let json = """
+        {
+          "tag_name": "v0.3.0",
+          "html_url": "https://example.com",
+          "assets": [
+            { "name": "Yaotong.DMG", "browser_download_url": "https://example.com/upper.dmg" }
+          ]
+        }
+        """.data(using: .utf8)!
+        let info = try UpdateChecker.parseRelease(json)
+        XCTAssertEqual(info.dmgURL?.absoluteString, "https://example.com/upper.dmg")
+    }
+
+    func testDefaultSourceURLMatchesDefaultRepo() {
+        // The "源码" button uses this; keep it in sync with the
+        // release endpoint.
+        let expected = URL(string: "https://github.com/\(UpdateChecker.defaultRepo)")!
+        XCTAssertEqual(UpdateChecker.defaultSourceURL, expected)
     }
 
     func testParseReleaseMissingBody() throws {
@@ -93,7 +159,8 @@ final class UpdateCheckerTests: XCTestCase {
         let info = UpdateChecker.UpdateInfo(
             version: "0.3.0",
             htmlURL: URL(string: "https://example.com")!,
-            notes: nil
+            notes: nil,
+            dmgURL: nil
         )
         let result = UpdateChecker.classify(
             info: info,
@@ -107,7 +174,8 @@ final class UpdateCheckerTests: XCTestCase {
         let info = UpdateChecker.UpdateInfo(
             version: "0.2.0",
             htmlURL: URL(string: "https://example.com")!,
-            notes: nil
+            notes: nil,
+            dmgURL: nil
         )
         let result = UpdateChecker.classify(
             info: info,
@@ -121,7 +189,8 @@ final class UpdateCheckerTests: XCTestCase {
         let info = UpdateChecker.UpdateInfo(
             version: "0.3.0",
             htmlURL: URL(string: "https://example.com")!,
-            notes: nil
+            notes: nil,
+            dmgURL: nil
         )
         let result = UpdateChecker.classify(
             info: info,
@@ -141,7 +210,8 @@ final class UpdateCheckerTests: XCTestCase {
         UpdateChecker.UpdateInfo(
             version: version,
             htmlURL: URL(string: "https://example.com")!,
-            notes: nil
+            notes: nil,
+            dmgURL: nil
         )
     }
 

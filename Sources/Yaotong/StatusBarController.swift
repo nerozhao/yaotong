@@ -38,6 +38,14 @@ final class StatusBarController: NSObject {
         )
         checkItem.target = self
         menu.addItem(checkItem)
+        // 查看源码 — 同行，链接到 GitHub repo
+        let sourceItem = NSMenuItem(
+            title: "查看源码",
+            action: #selector(openSource(_:)),
+            keyEquivalent: ""
+        )
+        sourceItem.target = self
+        menu.addItem(sourceItem)
         menu.addItem(.separator())
 
         // Work duration submenu
@@ -111,6 +119,7 @@ final class StatusBarController: NSObject {
     private let mainWindow: MainWindowController?
     private let onRestart: () -> Void
     private let onCheckForUpdates: () -> Void
+    private let onOpenSource: () -> Void
     let statusItem: NSStatusItem
 
     /// Cached SF Symbol images, built once. The old code rebuilt them
@@ -122,11 +131,13 @@ final class StatusBarController: NSObject {
     init(config: ConfigStore,
          mainWindow: MainWindowController? = nil,
          onRestart: @escaping () -> Void = {},
-         onCheckForUpdates: @escaping () -> Void = {}) {
+         onCheckForUpdates: @escaping () -> Void = {},
+         onOpenSource: @escaping () -> Void = {}) {
         self.config = config
         self.mainWindow = mainWindow
         self.onRestart = onRestart
         self.onCheckForUpdates = onCheckForUpdates
+        self.onOpenSource = onOpenSource
         // Icon-only items use `squareLength`; `variableLength` collapses to
         // zero width when there's no text content.
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -219,6 +230,10 @@ final class StatusBarController: NSObject {
 
     @objc private func checkForUpdates(_ sender: NSMenuItem) {
         onCheckForUpdates()
+    }
+
+    @objc private func openSource(_ sender: NSMenuItem) {
+        onOpenSource()
     }
 
     // MARK: - Private types

@@ -35,6 +35,13 @@ struct UpdateChecker {
         URL(string: "https://api.github.com/repos/\(defaultRepo)/releases/latest")!
     }()
 
+    /// Web URL of the repo — used by the "源码" / "查看源码" button
+    /// in the menu and main window. The release page itself is
+    /// `defaultURL`; the source tree lives one level up.
+    static let defaultSourceURL: URL = {
+        URL(string: "https://github.com/\(defaultRepo)")!
+    }()
+
     // MARK: - Result
 
     /// What the user sees after a check. Drives the alert text and
@@ -60,11 +67,17 @@ struct UpdateChecker {
 
     /// Parsed release payload. `notes` is the markdown release
     /// body — kept short by GitHub, suitable for pasting into an
-    /// alert.
+    /// alert. `dmgURL` is the `.dmg` asset's
+    /// `browser_download_url` from the GitHub release JSON —
+    /// `nil` if the release has no `.dmg` asset (older releases,
+    /// or a fork that ships only source tarballs). The
+    /// "download and install" path requires this; without it we
+    /// fall back to the browser button.
     struct UpdateInfo: Equatable {
         let version: String
         let htmlURL: URL
         let notes: String?
+        let dmgURL: URL?
 
         /// One-line summary used in the alert title.
         var headline: String { "发现新版本 v\(version)" }
@@ -124,6 +137,76 @@ struct UpdateChecker {
         }
     }
 
+    // MARK: - Download
+
+    /// Downloads the `.dmg` for `info` to `destination`, calling
+    /// `progress` periodically with `bytesReceived` and an
+    /// optional `totalBytes` (nil when the server didn't send
+    /// Content-Length, which is rare for GitHub release assets).
+    /// Returns the final URL on success — same as `destination`.
+    ///
+    /// Uses the streaming `URLSession.bytes(for:)` API so we
+    /// can report progress. The `data(for:)` API would be
+    /// simpler but only delivers the full payload at the end —
+    /// useless for the "下载中 50%" UI.
+    func download(info: UpdateInfo,
+                  to destination: URL,
+                  progress: @escaping (_ bytesReceived: Int64,
+                                       _ totalBytes: Int64?) -> Void = { _, _ in })
+    async throws -> URL {
+        guard let url = info.dmgURL else {
+            throw UpdateError.noDMGAsset
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Yaotong/\(AppVersion.short)", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 60
+
+        let (bytes, response) = try await session.bytes(for: request)
+        try validate(response: response)
+        let total = (response as? HTTPURLResponse)?.expectedContentLength
+
+        // Stream to disk in 64 KB chunks — small enough to keep
+        // progress callbacks frequent, large enough to amortize
+        // the write cost. 175 KB DMGs finish in 3 chunks.
+        FileManager.default.createFile(atPath: destination.path, contents: nil)
+        guard let handle = try? FileHandle(forWritingTo: destination) else {
+            throw UpdateError.cannotWrite(destination.path)
+        }
+        defer { try? handle.close() }
+
+        var received: Int64 = 0
+        progress(received, total)
+        for try await byte in bytes {
+            try handle.write(contentsOf: [byte])
+            received += 1
+            // Throttle progress callbacks — fire every 8 KB so
+            // the UI updates feel live without spamming the main
+            // thread on a small file.
+            if received % 8192 == 0 {
+                progress(received, total)
+            }
+        }
+        progress(received, total)
+        return destination
+    }
+
+    /// Default location for a downloaded DMG:
+    /// `~/Library/Application Support/Yaotong/Updates/<version>.dmg`.
+    /// Uses `Application Support` (not `Caches`) so the file
+    /// survives a reboot and the helper script can find it
+    /// after the main app quits.
+    static func stagedDMGPath(for info: UpdateInfo) throws -> URL {
+        let base = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let dir = base.appendingPathComponent("Yaotong/Updates", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("Yaotong-\(info.version).dmg")
+    }
+
     // MARK: - Networking
 
     private func fetch(url: URL) async throws -> (Data, URLResponse) {
@@ -169,7 +252,25 @@ struct UpdateChecker {
         let urlString = (raw["html_url"] as? String) ?? "https://github.com/\(defaultRepo)/releases"
         guard let url = URL(string: urlString) else { throw UpdateError.malformed }
         let body = raw["body"] as? String
-        return UpdateInfo(version: version, htmlURL: url, notes: body)
+        let dmgURL = parseDmgAssetURL(from: raw)
+        return UpdateInfo(version: version, htmlURL: url, notes: body, dmgURL: dmgURL)
+    }
+
+    /// Walks the `assets` array looking for a `.dmg` entry and
+    /// returns its `browser_download_url`. Returns `nil` if the
+    /// release has no `.dmg` (e.g., source-only release) — the
+    /// UI then hides the "下载并安装" button and falls back to
+    /// the browser path.
+    static func parseDmgAssetURL(from raw: [String: Any]) -> URL? {
+        guard let assets = raw["assets"] as? [[String: Any]] else { return nil }
+        for asset in assets {
+            guard let name = asset["name"] as? String,
+                  name.lowercased().hasSuffix(".dmg"),
+                  let urlString = asset["browser_download_url"] as? String,
+                  let url = URL(string: urlString) else { continue }
+            return url
+        }
+        return nil
     }
 
     /// Classify a parsed release against the running version and
@@ -253,12 +354,16 @@ struct UpdateChecker {
         case notHTTP
         case httpStatus(Int)
         case malformed
+        case noDMGAsset
+        case cannotWrite(String)
 
         var description: String {
             switch self {
             case .notHTTP: return "non-HTTP response"
             case .httpStatus(let code): return "HTTP \(code)"
             case .malformed: return "malformed release JSON"
+            case .noDMGAsset: return "release has no .dmg asset"
+            case .cannotWrite(let path): return "cannot write to \(path)"
             }
         }
     }

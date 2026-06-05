@@ -72,6 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onCheckForUpdates: { [weak self] in
                 self?.runUpdateCheck(source: .manual)
+            },
+            onOpenSource: {
+                NSWorkspace.shared.open(UpdateChecker.defaultSourceURL)
             }
         )
         statusBar = StatusBarController(
@@ -82,6 +85,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onCheckForUpdates: { [weak self] in
                 self?.runUpdateCheck(source: .manual)
+            },
+            onOpenSource: {
+                NSWorkspace.shared.open(UpdateChecker.defaultSourceURL)
             }
         )
 
@@ -259,8 +265,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // background is silent unless an update is actually
             // available; manual surfaces every outcome so the
             // click feels acknowledged.
-            _ = await MainActor.run { UpdatePrompt.show(result, source: source) }
+            let action = await MainActor.run { UpdatePrompt.show(result, source: source) }
+            if case .updateAvailable(let info) = result, action == .downloadAndInstall {
+                runDownloadAndInstall(info: info)
+            }
         }
+    }
+
+    /// Stage 2 of the "下载并安装" flow: download the DMG with
+    /// a progress window, then prompt to restart. The download
+    /// writes to `~/Library/Application Support/Yaotong/Updates/`
+    /// (not `Caches/`) so the file survives a reboot — the
+    /// helper script reads it back after the main app exits.
+    private func runDownloadAndInstall(info: UpdateChecker.UpdateInfo) {
+        Task { [updateChecker, weak self] in
+            let progressController = await MainActor.run { DownloadProgressWindowController(info: info) }
+            let destination: URL
+            do {
+                destination = try await updateChecker.download(info: info, to: UpdateChecker.stagedDMGPath(for: info)) { received, total in
+                    Task { @MainActor [weak progressController] in
+                        progressController?.update(received: received, total: total)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    progressController.close()
+                    UpdatePrompt.showDownloadError(String(describing: error))
+                }
+                return
+            }
+
+            let shouldInstall = await MainActor.run {
+                progressController.close()
+                return UpdatePrompt.showReadyToInstall(info: info)
+            }
+            if shouldInstall {
+                await self?.performInstall(info: info, dmgPath: destination)
+            }
+        }
+    }
+
+    /// Stage 3: invoke the bundled `update_helper.sh` to swap
+    /// the .app bundle and relaunch. The helper is invoked as
+    /// a detached process (same trick as `restartApp`) so it
+    /// survives our own termination.
+    private func performInstall(info: UpdateChecker.UpdateInfo, dmgPath: URL) async {
+        guard let helperURL = Bundle.main.url(forResource: "update_helper", withExtension: "sh") else {
+            os_log("update_helper.sh not found in bundle", log: activityLog, type: .error)
+            await MainActor.run { UpdatePrompt.showDownloadError("更新脚本缺失，请手动重装。") }
+            return
+        }
+        let appPath = Bundle.main.bundlePath
+        let mountPoint = "/tmp/yaotong-update-\(ProcessInfo.processInfo.globallyUniqueString)"
+
+        // Single-quote the three path args and escape any
+        // embedded single quotes — the same pattern as
+        // `restartApp`. The build directory and app name can
+        // contain spaces and non-ASCII (`腰痛`), so we can't
+        // rely on "no special chars".
+        let quote: (String) -> String = { $0.replacingOccurrences(of: "'", with: "'\\''") }
+        let script = """
+        '\(quote(helperURL.path))' \
+        '\(quote(dmgPath.path))' \
+        '\(quote(appPath))' \
+        '\(quote(mountPoint))' >/dev/null 2>&1
+        """
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", script]
+        do {
+            try task.run()
+        } catch {
+            os_log("install helper launch failed: %{public}@",
+                   log: activityLog, type: .error, String(describing: error))
+            await MainActor.run { UpdatePrompt.showDownloadError("无法启动安装脚本。") }
+            return
+        }
+        os_log("install helper launched for v%{public}@; quitting for restart",
+               log: activityLog, type: .default, info.version)
+        NSApp.terminate(nil)
     }
 
     // MARK: - Smoke test

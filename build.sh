@@ -43,6 +43,12 @@ echo "==> Generating AppIcon.png"
 swift Resources/generate_icon.swift
 cp Resources/AppIcon.png "${APP_DIR}/Contents/Resources/AppIcon.png"
 
+# Bundle the auto-update helper script. Invoked by AppDelegate at
+# the end of the "下载并安装" flow to swap the bundle and relaunch.
+# chmod +x is required — `Process` won't execute a non-exec file.
+cp Resources/update_helper.sh "${APP_DIR}/Contents/Resources/update_helper.sh"
+chmod +x "${APP_DIR}/Contents/Resources/update_helper.sh"
+
 # Ad-hoc sign so the menu bar app can run on Apple Silicon without quarantine issues.
 codesign --force --deep --sign - "${APP_DIR}" 2>/dev/null || true
 

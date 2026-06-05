@@ -12,15 +12,18 @@ final class MainWindowController {
     private let appState: AppState
     private let onRestart: () -> Void
     private let onCheckForUpdates: () -> Void
+    private let onOpenSource: () -> Void
 
     init(config: ConfigStore,
          appState: AppState,
          onRestart: @escaping () -> Void = {},
-         onCheckForUpdates: @escaping () -> Void = {}) {
+         onCheckForUpdates: @escaping () -> Void = {},
+         onOpenSource: @escaping () -> Void = {}) {
         self.config = config
         self.appState = appState
         self.onRestart = onRestart
         self.onCheckForUpdates = onCheckForUpdates
+        self.onOpenSource = onOpenSource
     }
 
     /// Open the main window. If already open, bring it to the front.
@@ -38,7 +41,8 @@ final class MainWindowController {
                 NSApp.terminate(nil)
             },
             onRestart: onRestart,
-            onCheckForUpdates: onCheckForUpdates
+            onCheckForUpdates: onCheckForUpdates,
+            onOpenSource: onOpenSource
         )
         let host = NSHostingController(rootView: content)
 
