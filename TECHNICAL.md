@@ -17,7 +17,7 @@
 | 活动检测 | `CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: ...)`，1 call/tick 基线 |
 | 菜单栏图标 | SF Symbol `circle.fill`，18pt，白色 template / 红色 `paletteColors: [.systemRed]`，**构造一次缓存复用** |
 | Dock 图标 | `Resources/AppIcon.png`（构建时由 `Resources/generate_icon.swift` 生成）—— 1024×1024 白底圆角矩形 + 蓝色填充圆（80% 直径，10% 内边距）。`Info.plist` 配 `CFBundleIconFile = AppIcon`，macOS 自动 downscale 到各 Dock 尺寸 |
-| 日志 | `os_log`，subsystem `local.yaotong`，category `activity`，`.default` 级别；活动类型 5s 节流 |
+| 日志 | `os_log`，subsystem `local.yaotong`，category `activity`，`.default` 级别；只写状态机事件 |
 
 ---
 
@@ -33,7 +33,7 @@ AppDelegate  ──┬─► ConfigStore (UserDefaults, ObservableObject)
                        └─► MainView (SwiftUI: 工作/休息计时器 + 设置)
 ```
 
-1 Hz Timer（tolerance 0.1s）→ `tick()` → `activity.sample()` 拿 idle + 可选事件 → `stateMachine.tick()` → 推 `appState` → `statusBar.setState()` 切换缓存 icon → `os_log` 写状态机事件 + 节流后写活动类型。
+1 Hz Timer（tolerance 0.1s）→ `tick()` → `activity.sample()` 拿 idle → `stateMachine.tick()` → 推 `appState` → `statusBar.setState()` 切换缓存 icon → `os_log` 写状态机事件。
 
 ---
 
@@ -44,7 +44,7 @@ Sources/Yaotong/
 ├── AppDelegate.swift            NSApplicationDelegate + 1Hz tick + 启动装配
 ├── ConfigStore.swift            UserDefaults 包装, ObservableObject
 ├── StateMachine.swift           两个独立计时器 + waitingForActivity 门
-├── ActivityMonitor.swift        CGEventSource 包装, sample() 返回 (idle, event)
+├── ActivityMonitor.swift        CGEventSource 包装, sample() 返回 idle
 ├── StatusBarController.swift    NSStatusItem + NSMenu + 缓存 SF Symbol
 ├── AppState.swift               work/rest 时长 + 阈值 (4 个 @Published)
 ├── MainView.swift               主界面 SwiftUI 视图
@@ -64,30 +64,18 @@ Package.swift                    SwiftPM 清单
 
 ### 4.1 活动信号：CGEventSource 而非全局监听
 
-**结论**：只调用 `CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: <specific>)`，**不安装**任何 `CGEventTap` / `NSEvent monitor`。
+**结论**：只调用一次 `CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .any)`，**不安装**任何 `CGEventTap` / `NSEvent monitor`，**不区分**活动类型。
 
 **原因**：
 - 不需要申请辅助功能（Accessibility）权限
 - 不污染用户的事件流（事件监听有性能影响）
 - 一次系统调用，零状态
 
-**性能关键**：`SystemActivityMonitor.sample()` 基线 1 个 CG 调用/tick（`kCGAnyInputEventType` 的"any input"读数），**仅在读数下降的那一 tick** 才追加最多 7 个 per-type 调用来识别种类。稳态 1 call/tick ≈ 3600 calls/小时（旧实现 7 call/tick ≈ 25200 calls/小时，**省 6×**）。
+**判定**：`idleSeconds < 1.0` 即视为"活动"，归零 `restTime`；否则把 `restTime` 设成系统的 `idleSeconds`。状态机只看这个数。
 
-`SystemActivityMonitor` 在活动发生的 tick 才会查询多个 `CGEventType`（`.leftMouseDown`、`.rightMouseDown`、`.otherMouseDown`、`.mouseMoved`、`.keyDown`、`.scrollWheel`、`.tabletPointer`），跟前一次的 `secondsSinceLastEventType` 对比：
-- 数值下降 → 该类型刚发生了一次事件
-- 通过 `os_log` 写入系统日志（subsystem `local.yaotong`, category `activity`，级别 `.default`），格式如：
+**日志**：只写状态机事件（`工作会话开始` / `休息判定` / `超时判定` / `休眠 gap`）。早期实现区分 12 种活动类型并按 5s 节流写入 `os_log`，但属高频噪音，状态机事件已覆盖用户需要的信息——**已移除**。
 
-```
-Yaotong: [local.yaotong:activity] 检测到活动：鼠标点击
-Yaotong: [local.yaotong:activity] 检测到活动：键盘按键
-Yaotong: [local.yaotong:activity] 检测到活动：滚轮滚动
-Yaotong: [local.yaotong:activity] 检测到活动：鼠标移动
-Yaotong: [local.yaotong:activity] 检测到活动：触摸板
-```
-
-活动类型仅用于日志，**不**影响判定逻辑（判定只看 `idleSeconds < 1.0`）。
-
-在「控制台.app」中按 `subsystem:local.yaotong` 或 `process:Yaotong` 过滤即可看到这些条目；命令行：
+在「控制台.app」中按 `subsystem:local.yaotong` 或 `process:Yaotong` 过滤即可看到条目；命令行：
 
 ```bash
 log show --predicate 'subsystem == "local.yaotong"' --info --last 5m
@@ -222,9 +210,9 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 22 集成测试
 
 | 优化点 | 旧实现 | 新实现 | 节省 |
 |--------|--------|--------|------|
-| `CGEventSource` 调用 | 7 次/tick（始终查 7 个类型） | 1 次/tick（仅活动发生瞬间追加 1–12 次） | **~6×** |
+| `CGEventSource` 调用 | 7 次/tick（始终查 7 个类型） | 1 次/tick（无 per-type tracking） | **~7×** |
 | `NSImage` 分配 | 2 次/tick（每状态各一次） | 2 次/启动（缓存复用） | **~3600×** |
-| `os_log` 系统调用 | 每次活动事件 1 次 | 活动类型 5s 节流；状态机事件按需 | 大幅下降 |
+| `os_log` 系统调用 | 每次活动事件 1 次 | 只写状态机事件（按需）+ 启动 sentinel + 休眠 gap | 大幅下降 |
 | Timer wakeup | 0 tolerance | 100ms tolerance，允许系统合并 | 小幅下降 |
 
 ---
@@ -243,7 +231,7 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 22 集成测试
 
 **功能**
 - `StateMachine`：墙钟工作 + 休息空闲 + `waitingForActivity` 门
-- `ActivityMonitor`：CGEventSource，sample() 返回 `(idle, event)`，追踪 12 种类型（点击 / 拖拽 / 键 / 修饰 / 系统 / 滚轮 / 移动 / 触摸板）
+- `ActivityMonitor`：CGEventSource，sample() 返回 `idle`，1 call/tick 不区分活动类型
 - `StatusBarController`：`circle.fill` 18pt，红色通过 `paletteColors` 烧进 image，**两个 NSImage 构造一次后缓存**
 - `MainWindowController`：启动后自动弹出，SwiftUI + AppKit 桥接；**Dock 图标随窗口状态切换**（`.regular` ↔ `.accessory`）
 - 状态机事件（`workSessionStarted` / `workSessionReset` / `overtimeReached`）通过 `os_log` 写入 `local.yaotong` subsystem
@@ -251,7 +239,7 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 22 集成测试
 - **Dock 图标**：构建时由 `Resources/generate_icon.swift` 生成 `AppIcon.png`（白底 + 蓝色填充圆，80% 直径）→ `Info.plist` `CFBundleIconFile = AppIcon` → 烧进 .app bundle
 - **暂停不持久化**：`isPaused` 是纯内存属性，每次启动默认 `false`（运行中）
 - **休息时长选项**：`[1, 2, 5, 10, 15, 20, 30, 45, 60]` 分钟（多了 2 分钟档）
-- 活动类型日志（`鼠标点击` / `拖拽` / `键盘` / `修饰键` / `系统键` / `滚轮` / `移动` / `触摸板`）5 秒节流
+- **活动类型日志**（12 种 CGEventType × 5s 节流）—— 移除（高频噪音，状态机事件已覆盖）
 - **休眠 / 唤醒处理**：`StateMachine.handleSleepWake()` 把"系统睡过了"当"已充分休息"——`workTime = 0` + 挂等待活动门。`AppDelegate` 用 wall-clock gap（>2s）+ `NSWorkspace.didWakeNotification` 双路检测，互为兜底
 - 工作时间窗口：默认 08:30–18:00；窗口外自动暂停；"开始腰痛" 可手动启动一次；进入窗口时挂容错门
 
@@ -263,9 +251,10 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 22 集成测试
 - `ActivityProviding` 协议（无第二个实现者）
 - `ActivityMonitor.secondsSinceLastInput()` / `latestActivity()` 双方法（合并成 `sample()`）
 - **菜单 emoji**（`🪟` / `🔄` / `⏸` / `▶` / `🚪`）—— 系统字体下渲染与中文标签不协调；菜单项改为纯文字
+- 活动类型日志（12 种 CGEventType × 5s 节流）—— 属高频噪音，状态机事件已覆盖；同步移除 `ActivityEvent` / `ActivityEvent.Kind` 及 `SystemActivityMonitor.trackedTypes` / `detectEvent()`
 
 **性能调整**
 - 1Hz Timer tolerance 0.1s
 - `NSImage` 缓存复用
-- `CGEventSource` 调用 7→1/秒（仅活动发生时追加）
-- `os_log` 活动类型 5s 节流
+- `CGEventSource` 调用：稳态 1 次/秒
+- `os_log` 只写状态机事件（无 per-event 噪音）

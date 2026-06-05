@@ -56,7 +56,7 @@
 - 不需要计算鼠标移动量
 - 不需要申请辅助功能（Accessibility）权限
 - 不污染用户的事件流
-- 区分活动类型（鼠标点击 / 鼠标移动 / 键盘按键 / 滚轮 / 触摸板）用于日志，**不影响**判定逻辑
+- 不区分活动类型——判定只看 `idleSeconds < 1.0`
 
 ---
 
@@ -111,19 +111,19 @@
 
 ### 4.3 系统日志（已实现）
 
-检测到的活动类型通过 `os_log` 写入系统日志，subsystem `local.yaotong`、category `activity`。
+状态机事件通过 `os_log` 写入系统日志，subsystem `local.yaotong`、category `activity`：
 
-- **状态机事件**（`工作会话开始` / `休息判定` / `超时判定`）按需输出，每次状态切换最多 1 条。
-- **活动类型**（`鼠标点击` / `键盘按键` 等）**5 秒节流**：同一类型 5 秒内只记一条，避免日志洪水。
+- **状态机事件**（`工作会话开始` / `休息判定` / `超时判定`）按需输出，每次状态切换最多 1 条
+- **启动 sentinel** + **休眠 gap** 事件用于确认子系统可达
+
+> 活动类型日志（`鼠标点击` / `键盘按键` …）已**移除**——即便 5s 节流也属高频噪音，状态机事件已覆盖用户需要的信息。
 
 在「控制台.app」按 subsystem 过滤即可看到：
 
 ```
-Yaotong: [local.yaotong:activity] 检测到活动：鼠标点击
-Yaotong: [local.yaotong:activity] 检测到活动：鼠标移动
-Yaotong: [local.yaotong:activity] 检测到活动：键盘按键
-Yaotong: [local.yaotong:activity] 检测到活动：滚轮滚动
-Yaotong: [local.yaotong:activity] 检测到活动：触摸板
+Yaotong: [local.yaotong:activity] 腰痛启动 — ...
+Yaotong: [local.yaotong:activity] 休息判定：已空闲 10分03秒，重置工作计时器并等待活动
+Yaotong: [local.yaotong:activity] 超时判定：已工作 30分00秒，达到工作阈值
 ```
 
 命令行：
@@ -247,7 +247,7 @@ log show --predicate 'subsystem == "local.yaotong"' --info --last 5m
 |---|--------|------|
 | 1 | 应用名 | ✅ 腰痛 |
 | 2 | 信号选型 | ✅ 仅用 `CGEventSource` 系统能力（不安装事件监听器） |
-| 3 | 活动类型识别 | ✅ 用于系统日志，**不**影响判定逻辑 |
+| 3 | 活动类型识别 | ❌ 不做（判定只看 `idleSeconds < 1.0`） |
 | 4 | UI 形式 | ✅ 菜单栏图标（白/红两态）+ 主界面窗口（双计时器 + 设置） |
 | 5 | 图标状态 | ✅ 工作中白色 / 超时红色（**只颜色区分**） |
 | 6 | 主界面 | ✅ 启动后自动弹出；工作计时在上、休息计时在下 |
@@ -282,6 +282,6 @@ log show --predicate 'subsystem == "local.yaotong"' --info --last 5m
 - 菜单栏图标（工作中白色 / 超时红色 `circle.fill`，构造一次缓存复用）
 - Dock 图标（蓝色填充圆，1024×1024 PNG 构建时生成烧进 bundle）
 - 主界面窗口（启动自动弹出）+ Dock 联动
-- 系统日志：状态机事件按需，活动类型 5s 节流
+- 系统日志：状态机事件按需
 - "暂停腰痛 / 开始腰痛" 纯开关，不持久化
 - 主界面 + 菜单都有"重启 腰痛"；菜单无 emoji

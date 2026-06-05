@@ -37,12 +37,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `log show --predicate 'subsystem == "local.yaotong"'`.
     private let activityLog = OSLog(subsystem: "local.yaotong", category: "activity")
 
-    /// Wall-clock time of the last activity-kind log. The detector
-    /// fires on every input event, but a one-liner per five seconds
-    /// is plenty for confirming the subsystem is alive.
-    private var lastActivityLog: Date = .distantPast
-    private static let activityLogInterval: TimeInterval = 5
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Smoke-test mode: drive the §6.3 scenarios headlessly and exit.
         if CommandLine.arguments.contains("--smoke-test") {
@@ -153,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         lastTickWallTime = now
 
-        let (idle, activityEvent) = activity.sample()
+        let idle = activity.sample()
         let computed = stateMachine.tick(
             now: now,
             idleSeconds: idle,
@@ -173,13 +167,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if stateMachine.lastEvent != .none {
             os_log("%{public}@", log: activityLog, type: .default, stateMachine.lastEvent.logMessage)
         }
-
-        // Raw activity ("鼠标点击" / "键盘按键" …) throttled to once per
-        // 5 s — the per-event stream is too noisy to be useful.
-        if let activityEvent, now.timeIntervalSince(lastActivityLog) >= Self.activityLogInterval {
-            os_log("检测到活动：%{public}@", log: activityLog, type: .default, activityEvent.kind.rawValue)
-            lastActivityLog = now
-        }
+        // Note: per-event activity logs ("鼠标点击" / "键盘按键" …) are
+        // intentionally suppressed — the throttled 5-second stream was
+        // still noise for normal use. The state-machine events above
+        // cover everything the user actually needs to see in the log.
     }
 
     // MARK: - System wake
