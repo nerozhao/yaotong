@@ -100,6 +100,63 @@ final class StateMachineTests: XCTestCase {
         XCTAssertEqual(sm.tick(now: t0.addingTimeInterval(61), idleSeconds: 0, isPaused: false), .overtime)
     }
 
+    // MARK: - Sleep / wake
+
+    /// `handleSleepWake()` resets the work counter and engages the
+    /// post-rest gate, so work only resumes after the next active
+    /// tick — same observable behavior as a "user rested long enough"
+    /// event.
+    func testHandleSleepWakeResetsAndEngagesGate() {
+        let sm = StateMachine(workMinutes: 30, restMinutes: 10)
+        let t0 = Date(timeIntervalSince1970: 0)
+        // Work for 31 minutes to get into overtime.
+        for i in 0..<(31 * 60) {
+            _ = sm.tick(now: t0.addingTimeInterval(TimeInterval(i)), idleSeconds: 0, isPaused: false)
+        }
+        XCTAssertEqual(sm.workTime, 31 * 60)
+        XCTAssertFalse(sm.waitingForActivity)
+
+        sm.handleSleepWake()
+
+        XCTAssertEqual(sm.workTime, 0, "Sleep should reset the work counter")
+        XCTAssertEqual(sm.restTime, 0, "Sleep should reset the rest counter")
+        XCTAssertTrue(sm.waitingForActivity, "Sleep should engage the post-rest gate")
+        XCTAssertEqual(sm.lastEvent, .workSessionReset(idleSeconds: 0))
+    }
+
+    /// After a sleep/wake event, idle ticks must not advance work —
+    /// the user has to actually press a key / move a mouse for the
+    /// gate to release and a new work session to begin.
+    func testWorkStaysZeroAfterSleepUntilActivity() {
+        let sm = StateMachine(workMinutes: 30, restMinutes: 10)
+        let t0 = Date(timeIntervalSince1970: 0)
+        sm.handleSleepWake()
+        // 5 minutes of idle ticks post-sleep: work stays at 0.
+        for i in 0..<(5 * 60) {
+            let state = sm.tick(
+                now: t0.addingTimeInterval(TimeInterval(i)),
+                idleSeconds: TimeInterval(i + 1),
+                isPaused: false
+            )
+            XCTAssertEqual(state, .working)
+            XCTAssertEqual(sm.workTime, 0)
+            XCTAssertTrue(sm.waitingForActivity)
+        }
+        // First active tick — gate releases, work starts next tick.
+        _ = sm.tick(
+            now: t0.addingTimeInterval(TimeInterval(5 * 60)),
+            idleSeconds: 0,
+            isPaused: false
+        )
+        XCTAssertFalse(sm.waitingForActivity)
+        _ = sm.tick(
+            now: t0.addingTimeInterval(TimeInterval(5 * 60 + 1)),
+            idleSeconds: 0,
+            isPaused: false
+        )
+        XCTAssertEqual(sm.workTime, 1)
+    }
+
     // MARK: - Events
 
     func testFirstActiveTickEmitsWorkSessionStarted() {

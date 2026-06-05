@@ -277,6 +277,70 @@ enum SmokeTest {
             toggledOn == true && toggledOff == false
         )
 
+        // ---- §6.3: 系统休眠后工作计时器清 0，唤醒后等待活动
+        // This drives the StateMachine path used by AppDelegate's
+        // wall-clock-gap detector and the NSWorkspace.didWake observer:
+        // a system sleep is treated as a "rested" event. The work counter
+        // must reset and the post-rest gate must engage — work only
+        // resumes after the next active tick.
+        config.isPaused = false
+        sm = StateMachine(workMinutes: 30, restMinutes: 10)
+        // Run 20 minutes of active work — comfortably below the threshold.
+        for i in 0..<(20 * 60) {
+            _ = sm.tick(
+                now: Date(timeIntervalSince1970: 3_000_000 + TimeInterval(i)),
+                idleSeconds: 0,
+                isPaused: false
+            )
+        }
+        XCTAssertEqual(sm.workTime, 20 * 60)
+        // Simulate the wake handler firing.
+        sm.handleSleepWake()
+        check(
+            "sleep/wake: handleSleepWake resets work counter to 0",
+            sm.workTime == 0
+        )
+        check(
+            "sleep/wake: handleSleepWake engages post-rest gate",
+            sm.waitingForActivity
+        )
+        check(
+            "sleep/wake: handleSleepWake emits workSessionReset event",
+            sm.lastEvent == .workSessionReset(idleSeconds: 0)
+        )
+        // 5 minutes of idle ticks post-wake — work must stay at 0.
+        for i in 0..<(5 * 60) {
+            _ = sm.tick(
+                now: Date(timeIntervalSince1970: 3_000_000 + 20 * 60 + TimeInterval(i)),
+                idleSeconds: TimeInterval(i + 1),
+                isPaused: false
+            )
+        }
+        check(
+            "sleep/wake: work stays at 0 until user is active again",
+            sm.workTime == 0 && sm.waitingForActivity
+        )
+        // First active tick post-wake — gate releases, work begins on the
+        // next tick.
+        _ = sm.tick(
+            now: Date(timeIntervalSince1970: 3_000_000 + 25 * 60),
+            idleSeconds: 0,
+            isPaused: false
+        )
+        check(
+            "sleep/wake: first active tick releases the gate (still workTime=0)",
+            sm.workTime == 0 && !sm.waitingForActivity
+        )
+        _ = sm.tick(
+            now: Date(timeIntervalSince1970: 3_000_000 + 25 * 60 + 1),
+            idleSeconds: 0,
+            isPaused: false
+        )
+        check(
+            "sleep/wake: work resumes on the tick after gate release",
+            sm.workTime == 1
+        )
+
         // ---- §6.3: "退出 腰痛"后菜单栏图标消失
         // The NSStatusItem is owned by the NSStatusBar; the system releases
         // it when the owning process terminates (and when no other code

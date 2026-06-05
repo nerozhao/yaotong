@@ -143,6 +143,21 @@ func setState(_ state: StatusState) {
 
 按用户要求：工作计时是墙钟（鼠标不动也累加），但休息判定命中后会挂起门直到下一次活动才重新开始。
 
+#### 4.3.1 系统休眠 / 唤醒
+
+`StateMachine.handleSleepWake()` 把"系统睡过了"当成"已充分休息"事件：`workTime = 0`、`restTime = 0`、挂上"等待活动"门、`lastEvent = .workSessionReset(idleSeconds: 0)`。下一次活动 tick 释放门，再下 tick 工作才重新累加。逻辑跟用户离开工位休息 10+ 分钟触发的 reset 完全一致——**长睡 = 长休息**。
+
+触发路径有两条（并用，互为兜底）：
+
+| 路径 | 来源 | 覆盖 | 盲区 |
+|------|------|------|------|
+| 墙钟 gap 检测 | `AppDelegate.tick()` 每次拿 `Date()` 算跟上次 tick 的间隔 | 所有 sleep（pmset / 合盖 / 断电 / force sleep / hibernate） | 短睡（<2s）被 tolerance 屏蔽；timer 凑巧在被 wake 紧跟着 fire 时 gap 可能很小 |
+| `NSWorkspace.didWakeNotification` | 系统保证送达 | 正常 sleep/wake、idle 唤醒 | 极少数 hard power event 可能漏 |
+
+`AppDelegate` 持 `lastTickWallTime: Date?`，第一次 tick 后是 `Date()`，后续 tick 算 `gap = now - last`。`gap > sleepGapThreshold (2.0s)` → `os_log` + `handleSleepWake()`。阈值取 2s 是因为：1s timer + 0.1s tolerance + 调度抖动 ≤ 1.5s，2s 留出裕度过滤掉正常 jitter。
+
+`didWake` 通知主要是**写日志**用（精确记录 `系统唤醒` 事件），同时 `setState(.working)` 强制刷一次图标让用户立刻看到白色。
+
 ### 4.4 主界面窗口：SwiftUI + AppKit 桥接 + Dock 联动
 
 - `MainWindowController` 用 `NSHostingController` 把 `MainView` 塞进 `NSWindow.contentViewController`
@@ -237,6 +252,7 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 22 集成测试
 - **暂停不持久化**：`isPaused` 是纯内存属性，每次启动默认 `false`（运行中）
 - **休息时长选项**：`[1, 2, 5, 10, 15, 20, 30, 45, 60]` 分钟（多了 2 分钟档）
 - 活动类型日志（`鼠标点击` / `拖拽` / `键盘` / `修饰键` / `系统键` / `滚轮` / `移动` / `触摸板`）5 秒节流
+- **休眠 / 唤醒处理**：`StateMachine.handleSleepWake()` 把"系统睡过了"当"已充分休息"——`workTime = 0` + 挂等待活动门。`AppDelegate` 用 wall-clock gap（>2s）+ `NSWorkspace.didWakeNotification` 双路检测，互为兜底
 - 工作时间窗口：默认 08:30–18:00；窗口外自动暂停；"开始腰痛" 可手动启动一次；进入窗口时挂容错门
 
 **已移除（多余设计）**

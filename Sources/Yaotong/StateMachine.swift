@@ -150,4 +150,15 @@ final class StateMachine {
         waitingForActivity = false
         lastEvent = .none
     }
+
+    /// Treat a detected system sleep/wake event as a "rested" event.
+    /// The user is presumed to have been away from the desk, so we
+    /// reset the work counter and engage the post-rest gate — work
+    /// only resumes after the next user input.
+    func handleSleepWake() {
+        workTime = 0
+        restTime = 0
+        waitingForActivity = true
+        lastEvent = .workSessionReset(idleSeconds: 0)
+    }
 }

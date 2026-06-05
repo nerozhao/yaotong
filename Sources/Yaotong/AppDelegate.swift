@@ -25,6 +25,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let appState = AppState()
     private var mainWindow: MainWindowController!
 
+    /// Wall-clock time of the previous tick. A jump of more than
+    /// `sleepGapThreshold` seconds between two ticks means the system
+    /// was asleep (Foundation timers pause while the machine is
+    /// sleeping) — we treat that as a rested event so the work
+    /// counter doesn't resume mid-cycle after wake.
+    private var lastTickWallTime: Date?
+    private static let sleepGapThreshold: TimeInterval = 2.0
+
     /// System log for activity detection — viewable in Console.app or via
     /// `log show --predicate 'subsystem == "local.yaotong"'`.
     private let activityLog = OSLog(subsystem: "local.yaotong", category: "activity")
@@ -81,6 +89,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleConfigChange(newConfig)
         }
 
+        // System sleep/wake handling. NSWorkspace.didWakeNotification is
+        // the OS-guaranteed counterpart to wall-clock-gap detection:
+        // either path alone has edge cases (timer coalescing can mask
+        // short sleeps; notifications can be missed on hard power
+        // events), so we use both. The notification is the precise
+        // breadcrumb in the system log; the gap check is the safety net.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleSystemWake()
+            }
+        }
+
         startTicking()
 
         // Auto-open the main window at launch.
@@ -112,6 +136,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func tick() {
         let now = Date()
+
+        // System-sleep detection via wall-clock gap. Foundation timers
+        // pause while the machine is asleep, so a gap much larger than
+        // our 1 s interval (tolerance 0.1 s) means the timer was
+        // suspended — treat the gap as a rested event so the work
+        // counter doesn't resume mid-cycle after wake.
+        if let last = lastTickWallTime {
+            let gap = now.timeIntervalSince(last)
+            if gap > Self.sleepGapThreshold {
+                let secs = Int(gap)
+                os_log("检测到系统休眠 %{public}d 秒 — 视为已充分休息，重置工作计时器并等待活动",
+                       log: activityLog, type: .default, secs)
+                stateMachine.handleSleepWake()
+            }
+        }
+        lastTickWallTime = now
+
         let (idle, activityEvent) = activity.sample()
         let computed = stateMachine.tick(
             now: now,
@@ -139,6 +180,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             os_log("检测到活动：%{public}@", log: activityLog, type: .default, activityEvent.kind.rawValue)
             lastActivityLog = now
         }
+    }
+
+    // MARK: - System wake
+
+    /// Called on `NSWorkspace.didWakeNotification`. Mostly we rely on
+    /// the wall-clock-gap detector in `tick()`; this handler exists
+    /// to (a) make wake events visible in the system log and
+    /// (b) cover the rare case where the timer fires before macOS
+    /// updates the wall clock (so the gap stays small) — in which
+    /// case the next-tick gap detector will still catch it.
+    private func handleSystemWake() {
+        os_log("系统唤醒 — 视为已充分休息，重置工作计时器并等待活动",
+               log: activityLog, type: .default)
+        stateMachine.handleSleepWake()
+        // Force one UI refresh so the icon returns to white immediately
+        // rather than waiting up to 1 s for the next tick.
+        statusBar.setState(.working)
     }
 
     // MARK: - Config change handling
