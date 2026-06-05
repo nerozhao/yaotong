@@ -30,6 +30,16 @@ final class StatusBarController: NSObject {
             menu.addItem(.separator())
         }
 
+        // 检查更新 — 紧跟主界面之后，作为另一个"看一眼就走"的轻量动作
+        let checkItem = NSMenuItem(
+            title: "检查更新…",
+            action: #selector(checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        checkItem.target = self
+        menu.addItem(checkItem)
+        menu.addItem(.separator())
+
         // Work duration submenu
         let workItem = NSMenuItem(
             title: "工作时长：\(config.workMinutes) 分钟",
@@ -100,6 +110,7 @@ final class StatusBarController: NSObject {
     private let config: ConfigStore
     private let mainWindow: MainWindowController?
     private let onRestart: () -> Void
+    private let onCheckForUpdates: () -> Void
     let statusItem: NSStatusItem
 
     /// Cached SF Symbol images, built once. The old code rebuilt them
@@ -110,10 +121,12 @@ final class StatusBarController: NSObject {
 
     init(config: ConfigStore,
          mainWindow: MainWindowController? = nil,
-         onRestart: @escaping () -> Void = {}) {
+         onRestart: @escaping () -> Void = {},
+         onCheckForUpdates: @escaping () -> Void = {}) {
         self.config = config
         self.mainWindow = mainWindow
         self.onRestart = onRestart
+        self.onCheckForUpdates = onCheckForUpdates
         // Icon-only items use `squareLength`; `variableLength` collapses to
         // zero width when there's no text content.
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -202,6 +215,10 @@ final class StatusBarController: NSObject {
 
     @objc private func showMainWindow(_ sender: NSMenuItem) {
         mainWindow?.open()
+    }
+
+    @objc private func checkForUpdates(_ sender: NSMenuItem) {
+        onCheckForUpdates()
     }
 
     // MARK: - Private types

@@ -29,11 +29,13 @@ AppDelegate  ──┬─► ConfigStore (UserDefaults, ObservableObject)
                ├─► ActivityMonitor (CGEventSource 包装)
                ├─► AppState (实时计时, ObservableObject)
                ├─► StatusBarController (NSStatusItem + NSMenu)
+               ├─► UpdateChecker (async, GitHub Releases JSON)
+               ├─► UpdatePrompt (@MainActor, NSAlert 渲染)
                └─► MainWindowController (NSWindow + NSHostingController)
                        └─► MainView (SwiftUI: 工作/休息计时器 + 设置)
 ```
 
-1 Hz Timer（tolerance 0.1s）→ `tick()` → `activity.sample()` 拿 idle → `stateMachine.tick()` → 推 `appState` → `statusBar.setState()` 切换缓存 icon → `os_log` 写状态机事件。
+1 Hz Timer（tolerance 0.1s）→ `tick()` → `activity.sample()` 拿 idle → `stateMachine.tick()` → 推 `appState` → `statusBar.setState()` 切换缓存 icon → `os_log` 写状态机事件。启动 5s 后另起 `Task` 跑 `UpdateChecker.check(source: .background)`，UI 点击则走 `.manual`。
 
 ---
 
@@ -49,10 +51,13 @@ Sources/Yaotong/
 ├── AppState.swift               work/rest 时长 + 阈值 (4 个 @Published)
 ├── MainView.swift               主界面 SwiftUI 视图
 ├── MainWindowController.swift   NSWindow + NSHostingController, 启动后自动打开
+├── UpdateChecker.swift          async 网络检查 + semver 比较 + UserDefaults 节流
+├── UpdatePrompt.swift           @MainActor NSAlert 渲染（结果 + 源 → 弹/不弹）
 └── SmokeTest.swift              --smoke-test 模式, 驱动 §6.2 集成测试
 Tests/YaotongTests/
 ├── StateMachineTests.swift      计时器 + 门 + 事件 + 跨阈值
-└── ConfigStoreTests.swift       持久化 / 暂停 / 切换
+├── ConfigStoreTests.swift       持久化 / 暂停 / 切换
+└── UpdateCheckerTests.swift     semver 解析/比较 + shouldShow 决策矩阵 + UserDefaults 往返
 Resources/Info.plist             LSUIElement=true, NSPrincipalClass=NSApplication
 build.sh                         本地打包脚本
 Package.swift                    SwiftPM 清单
@@ -185,6 +190,57 @@ func restartApp() {
 
 不签名、不分发、不上架。`Info.plist` 设 `LSUIElement=true`，让 App 不出现在 Dock 也不抢焦点。
 
+### 4.6 版本检查：UpdateChecker + UpdatePrompt
+
+**数据流**：
+```
+   menu/button click ─┐
+                      ├─► runUpdateCheck(source:) ─► UpdateChecker.check()
+   launch + 5s ───────┘                                     │
+                                                            ├─► URLSession
+                                                            ├─► parseRelease (JSONSerialization)
+                                                            └─► classify (semver 比较)
+                                                                       │
+                                                                       ▼
+                                                       Result { updateAvailable | upToDate
+                                                               | skipped | failed }
+                                                                       │
+                                                                       ▼
+                                                       UpdatePrompt.show(_:source:)
+                                                       ─────────────────────────
+                                                       updateAvailable: 去下载 / 稍后 / 跳过
+                                                       upToDate     (manual only): 已是最新
+                                                       failed       (manual only): 无法检查
+                                                       skipped / background: 静默
+```
+
+**端点**：默认 `https://api.github.com/repos/nerozhao/yaotong/releases/latest`（`UpdateChecker.defaultRepo` 常量，运行时读 `YT_UPDATE_REPO` 环境变量可覆盖）。解析只看 `tag_name` / `html_url` / `body` 三个字段，端点无关 — 把 URL 换成自家 JSON 文件也能工作。
+
+**节流**：
+- `backgroundThrottleSeconds = 24h` —— 启动后 5s 跑一次，同 24h 内只命中一次网络；其余时间返回 `.upToDate` 走静默路径
+- `manualThrottleSeconds = 6h` —— 菜单/按钮点击也走节流，对齐 GitHub secondary rate-limit 窗口
+
+为什么连手动点击也节流：用户狂点 100 次只烧 1 次请求配额。其余 99 次返回 `.upToDate` → 弹"已是最新版本"——语义正确（"我们最近查过，是最新版"），不消耗 API。
+
+**semver 比较**（`UpdateChecker.isNewer(remote:current:)`）：
+- 数字分量按 `[major, minor, patch]` 整数比较，缺位补 0
+- `0.10.0 > 0.9.0`（整型比较，不是字符串字典序）
+- `1 > 0.9.9`（自动 pad）
+- `-prerelease` / `+build` 后缀剥离（不参与排序）
+- 任一端解析失败返回 `false`（宁可漏报不可误报）
+
+**为什么后台静默、手动全弹**：后台检查是 app 自发的，弹"已是最新版本"会变成"每天启动都被告知一遍"，变成噪音。手动点击是用户主动行为，期待看见结果——"没结果 = 没响应 = 按钮坏了"。
+
+**skipped 持久化**：点过"跳过该版本"的版本号写到 `UserDefaults.yaotong.update.skippedVersion`，远程版本号与之相等时返回 `.skipped(info)`，`UpdatePrompt` 永远不弹。卸载/重装 app 不清 UserDefaults，所以"跳过 v0.3.0"会在后续版本都生效——直到 v0.4.0 出现。
+
+**测试覆盖**（`UpdateCheckerTests`，16 个用例）：
+- `stripTagPrefix` / `isValidVersion` 边界（含 `1..2` / `.1.0` / `1.0.0+build.42` 等历史上让 `split` 默认 `omittingEmptySubsequences: true` 误判的输入）
+- `isNewer` 真假值矩阵
+- `parseRelease` 全字段 / 缺字段 / 各种 malformed
+- `classify` 三种结果（updateAvailable / upToDate / skipped）
+- `shouldShow` 4 源 × 4 结果的弹/不弹决策矩阵
+- `State` 在 `UserDefaults` 套件里 round-trip
+
 ---
 
 ## 5. CLI 标志
@@ -200,8 +256,8 @@ func restartApp() {
 ```bash
 ./build.sh release                          # 出 build/腰痛.app
 open build/腰痛.app                         # 启动 GUI
-swift test                                  # 22 单元测试
-build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 22 集成测试
+swift test                                  # 41 单元测试
+build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 集成测试
 ```
 
 ---
@@ -241,7 +297,7 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 22 集成测试
 - **休息时长选项**：`[1, 2, 5, 10, 15, 20, 30, 45, 60]` 分钟（多了 2 分钟档）
 - **活动类型日志**（12 种 CGEventType × 5s 节流）—— 移除（高频噪音，状态机事件已覆盖）
 - **休眠 / 唤醒处理**：`StateMachine.handleSleepWake()` 把"系统睡过了"当"已充分休息"——`workTime = 0` + 挂等待活动门。`AppDelegate` 用 wall-clock gap（>2s）+ `NSWorkspace.didWakeNotification` 双路检测，互为兜底
-- 工作时间窗口：默认 08:30–18:00；窗口外自动暂停；"开始腰痛" 可手动启动一次；进入窗口时挂容错门
+- **版本检查**：`UpdateChecker`（async 网络 + semver + 节流）+ `UpdatePrompt`（NSAlert 渲染）。启动 5s 后后台静默检查（24h 节流），菜单/主界面手动点击走完整结果（6h 节流兜底防滥用）。默认查 GitHub Releases API，`YT_UPDATE_REPO=owner/repo` 环境变量覆盖
 
 **已移除（多余设计）**
 - 调试面板（`DebugView` / `DebugWindowController` / `LogStore`）
@@ -252,6 +308,7 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 22 集成测试
 - `ActivityMonitor.secondsSinceLastInput()` / `latestActivity()` 双方法（合并成 `sample()`）
 - **菜单 emoji**（`🪟` / `🔄` / `⏸` / `▶` / `🚪`）—— 系统字体下渲染与中文标签不协调；菜单项改为纯文字
 - 活动类型日志（12 种 CGEventType × 5s 节流）—— 属高频噪音，状态机事件已覆盖；同步移除 `ActivityEvent` / `ActivityEvent.Kind` 及 `SystemActivityMonitor.trackedTypes` / `detectEvent()`
+- `UpdateChecker.classifyForTesting` 测试专用包装（合并到 `classify` 直接暴露，单一真相）
 
 **性能调整**
 - 1Hz Timer tolerance 0.1s

@@ -11,13 +11,16 @@ final class MainWindowController {
     private let config: ConfigStore
     private let appState: AppState
     private let onRestart: () -> Void
+    private let onCheckForUpdates: () -> Void
 
     init(config: ConfigStore,
          appState: AppState,
-         onRestart: @escaping () -> Void = {}) {
+         onRestart: @escaping () -> Void = {},
+         onCheckForUpdates: @escaping () -> Void = {}) {
         self.config = config
         self.appState = appState
         self.onRestart = onRestart
+        self.onCheckForUpdates = onCheckForUpdates
     }
 
     /// Open the main window. If already open, bring it to the front.
@@ -34,7 +37,8 @@ final class MainWindowController {
             onQuit: {
                 NSApp.terminate(nil)
             },
-            onRestart: onRestart
+            onRestart: onRestart,
+            onCheckForUpdates: onCheckForUpdates
         )
         let host = NSHostingController(rootView: content)
 

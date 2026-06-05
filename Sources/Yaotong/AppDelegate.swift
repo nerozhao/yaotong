@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tickTimer: Timer?
     private let appState = AppState()
     private var mainWindow: MainWindowController!
+    private let updateChecker = UpdateChecker()
 
     /// Wall-clock time of the previous tick. A jump of more than
     /// `sleepGapThreshold` seconds between two ticks means the system
@@ -68,6 +69,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appState: appState,
             onRestart: { [weak self] in
                 self?.restartApp()
+            },
+            onCheckForUpdates: { [weak self] in
+                self?.runUpdateCheck(source: .manual)
             }
         )
         statusBar = StatusBarController(
@@ -75,6 +79,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mainWindow: mainWindow,
             onRestart: { [weak self] in
                 self?.restartApp()
+            },
+            onCheckForUpdates: { [weak self] in
+                self?.runUpdateCheck(source: .manual)
             }
         )
 
@@ -104,6 +111,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Auto-open the main window at launch.
         DispatchQueue.main.async { [weak self] in
             self?.mainWindow?.open()
+        }
+
+        // Background update check — debounced so the launch
+        // experience isn't blocked on a network round-trip, and
+        // throttled inside `runUpdateCheck` so we don't ping the
+        // releases API more than once a day.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.runUpdateCheck(source: .background)
         }
     }
 
@@ -230,6 +245,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    String(describing: error))
         }
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Update check
+
+    /// Run a check and surface the result via `UpdatePrompt`.
+    /// Split out from the menu callback so the background launch
+    /// path and the manual menu path share the same plumbing.
+    private func runUpdateCheck(source: UpdateChecker.Source) {
+        Task { [updateChecker] in
+            let result = await updateChecker.check(source: source)
+            // The source drives whether the result is surfaced —
+            // background is silent unless an update is actually
+            // available; manual surfaces every outcome so the
+            // click feels acknowledged.
+            _ = await MainActor.run { UpdatePrompt.show(result, source: source) }
+        }
     }
 
     // MARK: - Smoke test

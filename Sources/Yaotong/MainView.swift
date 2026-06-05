@@ -12,15 +12,18 @@ struct MainView: View {
 
     private let onQuit: () -> Void
     private let onRestart: () -> Void
+    private let onCheckForUpdates: () -> Void
 
     init(config: ConfigStore,
          appState: AppState,
          onQuit: @escaping () -> Void = {},
-         onRestart: @escaping () -> Void = {}) {
+         onRestart: @escaping () -> Void = {},
+         onCheckForUpdates: @escaping () -> Void = {}) {
         self.config = config
         self.appState = appState
         self.onQuit = onQuit
         self.onRestart = onRestart
+        self.onCheckForUpdates = onCheckForUpdates
     }
 
     var body: some View {
@@ -33,6 +36,7 @@ struct MainView: View {
             Divider()
             pauseSection
             HStack {
+                Button("检查更新…") { onCheckForUpdates() }
                 Spacer()
                 Button("重启 腰痛") { onRestart() }
                 Button("退出 腰痛", role: .destructive) { onQuit() }
