@@ -40,21 +40,19 @@ enum StateMachineEvent: Equatable {
     }
 }
 
-/// State machine with two independent semantics:
+/// State machine with two independent counters:
 ///
-/// - **`workTime`**: total *active* time since the last "rested" event.
-///   It only ticks when the user is currently active (mouse / keyboard
-///   input in the last second). It is reset to 0 when the rest threshold
-///   is hit, and stays at 0 until the user moves / types again.
+/// - **`workTime`**: wall-clock time since the last "rested" event.
+///   It ticks every second regardless of activity. It is reset to 0
+///   when the rest threshold is hit.
 ///
-/// - **`restTime`**: total *idle* time since the last activity event.
+/// - **`restTime`**: idle time since the last activity event.
 ///   It is reset to 0 every time the user is active, and otherwise
 ///   adopts the system-reported idle seconds.
 ///
 /// The icon is `overtime` when `workTime >= workThreshold`, else `working`.
-/// Per spec: "如果休息达到要求，那么工作应该归0，直到有鼠标活动才开始
-/// 计时了" — work is the active-time counter, gated on the user being
-/// present.
+/// Per latest spec: work is a wall-clock counter that simply resets when
+/// the user has rested long enough — it does NOT pause while idle.
 final class StateMachine {
 
     /// Time below which a tick is considered "the user is currently
@@ -102,10 +100,8 @@ final class StateMachine {
             return .working
         }
 
-        // Work counter: only ticks while the user is active.
-        if wasActive {
-            workTime += 1
-        }
+        // Work counter: ticks every second regardless of activity.
+        workTime += 1
 
         // Work crossed the overtime threshold.
         if prevWork < workThreshold && workTime >= workThreshold {

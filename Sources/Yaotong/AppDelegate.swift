@@ -41,10 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // A sentinel log entry so the user can confirm the logger is wired
-        // up correctly from Console.app / `log show`.
-        os_log("腰痛 启动 (subsystem=local.yaotong, category=activity)",
-               log: activityLog, type: .info)
+        // Sentinel so the user can confirm logging works from Console.app
+        // (filter by `process:Yaotong` or by `subsystem:local.yaotong`).
+        os_log("腰痛启动 — 移动鼠标/按键/滚动后会在此 subsystem 出现活动日志",
+               log: activityLog, type: .default)
 
         config = ConfigStore()
         stateMachine = StateMachine(
@@ -106,11 +106,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar.setState(computed)
         _ = lastState
 
-        // Log detected activity types to the system log (visible in
-        // Console.app under subsystem "local.yaotong" or via
-        // `log show --predicate 'subsystem == "local.yaotong"' --last 5m`).
+        // Log detected activity types to the system log. Use `.default`
+        // (not `.info`) so Console.app shows them without the user having
+        // to enable "Include Info Messages".
         if let event = activity.latestActivity() {
-            os_log("检测到活动：%{public}@", log: activityLog, type: .info, event.kind.rawValue)
+            os_log("检测到活动：%{public}@", log: activityLog, type: .default, event.kind.rawValue)
         }
     }
 
