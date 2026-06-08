@@ -206,9 +206,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         os_log("系统唤醒 — 视为已充分休息，重置工作计时器并等待活动",
                log: activityLog, type: .default)
         stateMachine.handleSleepWake()
-        // Force one UI refresh so the icon returns to white immediately
-        // rather than waiting up to 1 s for the next tick.
-        statusBar.setState(.working)
+        // Force one UI refresh so the icon shows the "rested" state
+        // (blue) immediately rather than waiting up to 1 s for the
+        // next tick to pick up the engaged post-rest gate.
+        statusBar.setState(.rested)
     }
 
     // MARK: - Config change handling

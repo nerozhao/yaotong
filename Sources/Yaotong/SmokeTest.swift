@@ -97,7 +97,9 @@ enum SmokeTest {
             idleSeconds: 0,
             isPaused: false
         )
-        controller.setState(overtimeTick)
+        // Skip the entry flash animation so the displayed image is the
+        // steady-state red we want to inspect.
+        controller.setState(overtimeTick, animated: false)
         check(
             "30 min continuous work: state becomes .overtime",
             overtimeTick == .overtime
@@ -116,24 +118,66 @@ enum SmokeTest {
             try? png.write(to: URL(fileURLWithPath: "/tmp/yaotong-overtime-icon.png"))
         }
 
-        // ---- §6.3: 离开座位 10 分钟后回到工位，图标恢复白色
-        let returnTick = sm.tick(
+        // ---- §6.3: 离开座位 10 分钟后图标变蓝（休息等待中）
+        // 10 min idle pushes `restTime` across the threshold; the
+        // state machine resets work and engages the post-rest gate.
+        // While the gate is up the icon stays blue even if the user
+        // keeps being idle — the cue is the next mouse move, not the
+        // passage of more time.
+        let restGateTick = sm.tick(
             now: t0.addingTimeInterval(TimeInterval(40 * 60)),
             idleSeconds: 10 * 60,
             isPaused: false
         )
-        controller.setState(returnTick)
+        controller.setState(restGateTick, animated: false)
         check(
-            "10 min away then return: state returns to .working",
-            returnTick == .working
+            "10 min away: state becomes .rested (post-rest gate engaged)",
+            restGateTick == .rested
         )
         check(
-            "10 min away then return: icon restored to template image (white)",
+            "10 min away: icon switched to non-template (colored) image",
+            controller.statusItem.button?.image?.isTemplate == false
+        )
+        check(
+            "10 min away: icon pixels are actually blue",
+            SmokeTest.dominantBlueness(of: controller.statusItem.button?.image) > 0.3,
+            "got \(SmokeTest.dominantBlueness(of: controller.statusItem.button?.image))"
+        )
+        if let png = controller.statusItem.button?.image?.pngData() {
+            try? png.write(to: URL(fileURLWithPath: "/tmp/yaotong-rested-icon.png"))
+        }
+        // A few more idle ticks: the gate is still up, the icon stays blue.
+        for i in 1...5 {
+            _ = sm.tick(
+                now: t0.addingTimeInterval(TimeInterval(40 * 60 + i)),
+                idleSeconds: 10 * 60 + TimeInterval(i),
+                isPaused: false
+            )
+        }
+        check(
+            "still idle: state stays .rested as long as the gate is engaged",
+            sm.lastEvent == .none && sm.waitingForActivity
+        )
+
+        // ---- §6.3: 用户回到工位，图标恢复白色
+        // First active tick releases the gate (no work increment yet).
+        let gateReleaseTick = sm.tick(
+            now: t0.addingTimeInterval(TimeInterval(40 * 60 + 6)),
+            idleSeconds: 0,
+            isPaused: false
+        )
+        controller.setState(gateReleaseTick, animated: false)
+        check(
+            "user returns: gate release tick reports .working (no work yet)",
+            gateReleaseTick == .working
+        )
+        check(
+            "user returns: icon restored to template image (white)",
             controller.statusItem.button?.image?.isTemplate == true
         )
         check(
-            "10 min away then return: icon pixels are NOT red (back to template)",
-            SmokeTest.dominantRedness(of: controller.statusItem.button?.image) < 0.1
+            "user returns: icon pixels are NOT blue (back to template)",
+            SmokeTest.dominantBlueness(of: controller.statusItem.button?.image) < 0.1
         )
         if let png = controller.statusItem.button?.image?.pngData() {
             try? png.write(to: URL(fileURLWithPath: "/tmp/yaotong-working-icon.png"))
@@ -397,13 +441,28 @@ enum SmokeTest {
     /// overtime icon's tint actually rendered (rather than just inspecting
     /// the template flag, which `contentTintColor` mishandles).
     static func dominantRedness(of image: NSImage?) -> Double {
+        return dominantChannel(of: image) { r, g, b in
+            r > 0.5 && r > g + 0.15 && r > b + 0.15
+        }
+    }
+
+    /// Same shape as `dominantRedness`, but for the blue channel. Used
+    /// to verify the rested-state icon actually rendered blue.
+    static func dominantBlueness(of image: NSImage?) -> Double {
+        return dominantChannel(of: image) { r, g, b in
+            b > 0.5 && b > r + 0.15 && b > g + 0.15
+        }
+    }
+
+    /// Shared sampling loop for the per-channel dominance checks.
+    private static func dominantChannel(of image: NSImage?, isMatch: (Double, Double, Double) -> Bool) -> Double {
         guard let image,
               let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff) else { return 0 }
         let width = rep.pixelsWide
         let height = rep.pixelsHigh
         guard width > 0, height > 0 else { return 0 }
-        var redCount = 0
+        var matchCount = 0
         var opaqueCount = 0
         for y in 0..<height {
             for x in 0..<width {
@@ -411,12 +470,12 @@ enum SmokeTest {
                 let (r, g, b, a) = (c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent)
                 if a < 0.1 { continue }
                 opaqueCount += 1
-                if r > 0.5 && r > g + 0.15 && r > b + 0.15 {
-                    redCount += 1
+                if isMatch(r, g, b) {
+                    matchCount += 1
                 }
             }
         }
-        return opaqueCount == 0 ? 0 : Double(redCount) / Double(opaqueCount)
+        return opaqueCount == 0 ? 0 : Double(matchCount) / Double(opaqueCount)
     }
 }
 

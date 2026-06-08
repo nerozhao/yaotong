@@ -4,6 +4,13 @@ import Foundation
 enum StatusState: Equatable {
     case working
     case overtime
+    /// Post-rest gate is engaged: the user has been idle long enough
+    /// that work has been reset, and the app is waiting for the user
+    /// to become active again. Distinct from `.working` so the menu
+    /// bar can show a different color (blue) — the user has
+    /// "completed a rest cycle" and the next mouse move is the cue
+    /// to start a new work session.
+    case rested
 }
 
 /// Reason the state machine's state changed on a given tick.
@@ -104,7 +111,7 @@ final class StateMachine {
             workTime = 0
             waitingForActivity = true
             lastEvent = .workSessionReset(idleSeconds: restTime)
-            return .working
+            return .rested
         }
 
         // Activity releases the post-rest gate. Emit a "started" event
@@ -119,10 +126,12 @@ final class StateMachine {
         }
 
         // Work counter: ticks every second unless the post-rest gate is
-        // still engaged.
+        // still engaged. While the gate is up we keep showing the
+        // `.rested` icon — the user has finished a rest cycle and we
+        // are waiting for the next mouse move to start a new session.
         guard !waitingForActivity else {
             lastEvent = .none
-            return .working
+            return .rested
         }
         workTime += 1
 

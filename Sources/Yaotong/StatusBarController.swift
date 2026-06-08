@@ -10,8 +10,36 @@ final class StatusBarController: NSObject {
     /// by the app's tick loop. Looks like a setter but it just swaps the
     /// cached `NSImage` — no work to do on the common (no-change) path
     /// beyond the pointer swap.
-    func setState(_ state: StatusState) {
-        statusItem.button?.image = (state == .overtime) ? overtimeImage : workingImage
+    ///
+    /// Transitioning into `.overtime` from a non-overtime state triggers a
+    /// brief red flash so the user notices the threshold crossing without
+    /// having to look at the menu bar. Subsequent ticks while still in
+    /// overtime (the common case during a long work session) just
+    /// re-assert the solid red icon.
+    ///
+    /// - Parameter animated: When `false`, the overtime entry flash is
+    ///   skipped and the icon is set to its steady-state color
+    ///   immediately. Used by the smoke test to inspect the tinting
+    ///   without racing the flash timer.
+    func setState(_ state: StatusState, animated: Bool = true) {
+        let previous = currentState
+        currentState = state
+        cancelFlash()
+
+        switch state {
+        case .working:
+            statusItem.button?.image = workingImage
+        case .rested:
+            statusItem.button?.image = restedImage
+        case .overtime:
+            if previous == .overtime || !animated {
+                // Long-overtime path, or a test that wants the
+                // steady-state image without the animation.
+                statusItem.button?.image = overtimeImage
+            } else {
+                startOvertimeFlash()
+            }
+        }
     }
 
     func rebuildMenu() {
@@ -127,6 +155,16 @@ final class StatusBarController: NSObject {
     /// though the state almost never changes.
     private let workingImage: NSImage
     private let overtimeImage: NSImage
+    private let restedImage: NSImage
+
+    /// The last state we were told to show. Used to detect the
+    /// *transition* into `.overtime` so we flash exactly once, not on
+    /// every tick of a long overtime session.
+    private var currentState: StatusState = .working
+
+    /// Active flash timer for the `.overtime` entry animation.
+    /// `nil` when no flash is in progress.
+    private var flashTimer: Timer?
 
     init(config: ConfigStore,
          mainWindow: MainWindowController? = nil,
@@ -143,6 +181,7 @@ final class StatusBarController: NSObject {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.workingImage = StatusBarController.makeWorkingIcon()
         self.overtimeImage = StatusBarController.makeOvertimeIcon()
+        self.restedImage = StatusBarController.makeRestedIcon()
         super.init()
         statusItem.button?.imagePosition = .imageOnly
         rebuildMenu()
@@ -170,18 +209,89 @@ final class StatusBarController: NSObject {
         return sized
     }
 
-    /// Overtime-state icon: red, baked into the image via a palette config.
-    /// `contentTintColor` on the status-item button is not honored for
-    /// SF Symbols, so the color has to be in the image itself.
-    private static func makeOvertimeIcon() -> NSImage {
+    /// Build a non-template icon tinted with a single color via a SF
+    /// Symbol palette config. `contentTintColor` on the status-item
+    /// button is not honored for SF Symbols, so the color has to be
+    /// baked into the image itself.
+    private static func makeTintedIcon(_ color: NSColor) -> NSImage {
         let base = NSImage(systemSymbolName: symbolName, accessibilityDescription: "腰痛")
             ?? NSImage()
         let combined = Self.iconConfig.applying(
-            NSImage.SymbolConfiguration(paletteColors: [.systemRed])
+            NSImage.SymbolConfiguration(paletteColors: [color])
         )
         let tinted = base.withSymbolConfiguration(combined) ?? base
         tinted.isTemplate = false
         return tinted
+    }
+
+    /// Overtime-state icon: red. Shown after the work threshold.
+    private static func makeOvertimeIcon() -> NSImage {
+        makeTintedIcon(.systemRed)
+    }
+
+    /// Rested-state icon: blue. Shown after the rest threshold, while
+    /// the post-rest gate is engaged and we are waiting for the user
+    /// to become active again.
+    private static func makeRestedIcon() -> NSImage {
+        makeTintedIcon(.systemBlue)
+    }
+
+    // MARK: - Overtime flash
+
+    /// Number of "on" pulses during the overtime entry flash. The full
+    /// sequence is `flashCount` reds separated by short blanks,
+    /// settling on solid red.
+    private static let flashCount = 3
+    /// Per-step duration of the flash. Short enough that the whole
+    /// sequence finishes well under two seconds — long enough that
+    /// each blink is unmistakably visible.
+    private static let flashStepInterval: TimeInterval = 0.18
+
+    /// Run the entry flash: alternate the button's image between
+    /// the red overtime icon and `nil` (which makes the menu bar
+    /// cell show its background) for a few cycles, then leave the
+    /// icon solid red.
+    private func startOvertimeFlash() {
+        // Pre-computed pattern: red, off, red, off, red, off, red (settle).
+        // Length = flashCount * 2 - 1 pulses before the settle step.
+        var pattern: [Bool] = []
+        for i in 0..<(Self.flashCount * 2 - 1) {
+            // Even indices are "on" (red), odd are "off" (blank).
+            pattern.append(i % 2 == 0)
+        }
+        var step = 0
+        let timer = Timer(timeInterval: Self.flashStepInterval, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            // If the state changed mid-flash (e.g. user paused, or
+            // ticked into a different state), the surrounding
+            // `setState` already invalidated this timer and reset
+            // the image — bail out without touching anything.
+            guard self.currentState == .overtime, self.flashTimer === timer else {
+                timer.invalidate()
+                return
+            }
+            if step >= pattern.count {
+                // Final settle on solid red.
+                timer.invalidate()
+                if self.flashTimer === timer {
+                    self.flashTimer = nil
+                }
+                self.statusItem.button?.image = self.overtimeImage
+                return
+            }
+            self.statusItem.button?.image = pattern[step] ? self.overtimeImage : nil
+            step += 1
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        flashTimer = timer
+    }
+
+    private func cancelFlash() {
+        flashTimer?.invalidate()
+        flashTimer = nil
     }
 
     private func makeDurationSubmenu(

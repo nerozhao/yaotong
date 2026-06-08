@@ -15,7 +15,7 @@
 | 包管理 | Swift Package Manager |
 | 配置存储 | `UserDefaults`（`yaotong.workMinutes` / `yaotong.restMinutes`）—— **`isPaused` 是纯内存**，不持久化 |
 | 活动检测 | `CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: ...)`，1 call/tick 基线 |
-| 菜单栏图标 | SF Symbol `circle.fill`，18pt，白色 template / 红色 `paletteColors: [.systemRed]`，**构造一次缓存复用** |
+| 菜单栏图标 | SF Symbol `circle.fill`，18pt，白色 template / 红色 `paletteColors: [.systemRed]` / 蓝色 `paletteColors: [.systemBlue]`，**构造一次缓存复用**；**进入 `.overtime` 时跑一次 0.18s × 5 步的红/空闪烁再稳定** |
 | Dock 图标 | `Resources/AppIcon.png`（构建时由 `Resources/generate_icon.swift` 生成）—— 1024×1024 白底圆角矩形 + 蓝色填充圆（80% 直径，10% 内边距）。`Info.plist` 配 `CFBundleIconFile = AppIcon`，macOS 自动 downscale 到各 Dock 尺寸 |
 | 日志 | `os_log`，subsystem `local.yaotong`，category `activity`，`.default` 级别；只写状态机事件 |
 
@@ -35,7 +35,7 @@ AppDelegate  ──┬─► ConfigStore (UserDefaults, ObservableObject)
                        └─► MainView (SwiftUI: 工作/休息计时器 + 设置)
 ```
 
-1 Hz Timer（tolerance 0.1s）→ `tick()` → `activity.sample()` 拿 idle → `stateMachine.tick()` → 推 `appState` → `statusBar.setState()` 切换缓存 icon → `os_log` 写状态机事件。启动 5s 后另起 `Task` 跑 `UpdateChecker.check(source: .background)`，UI 点击则走 `.manual`。
+1 Hz Timer（tolerance 0.1s）→ `tick()` → `activity.sample()` 拿 idle → `stateMachine.tick()` 返回三态 `StatusState`（`.working` / `.overtime` / `.rested`）→ 推 `appState` → `statusBar.setState()` 切换缓存 icon → `os_log` 写状态机事件。`.working` 和 `.rested` 是单步指针切换；`.overtime` 的入口会启动一个 0.18s × 5 步的红/空闪烁 Timer 再稳定为红色。启动 5s 后另起 `Task` 跑 `UpdateChecker.check(source: .background)`，UI 点击则走 `.manual`。
 
 ---
 
@@ -92,28 +92,35 @@ log show --predicate 'subsystem == "local.yaotong"' --info --last 5m
 
 **坑 1（颜色）**：macOS `NSStatusItem.button.contentTintColor` **不**对 SF Symbol 生效。设了 `isTemplate = false` + `contentTintColor = .systemRed` 后，图标显示的是 SF Symbol 的原始黑色，**不是红色**。
 
-**修复 1**：用 `NSImage.SymbolConfiguration(paletteColors: [.systemRed])` + `withSymbolConfiguration` 把红色烧进 `NSImage` 本身。
+**修复 1**：用 `NSImage.SymbolConfiguration(paletteColors: [.systemRed])` + `withSymbolConfiguration` 把红色烧进 `NSImage` 本身。三种状态用同一个 `makeTintedIcon(_:)` 工厂，仅颜色参数不同（`.systemRed` / `.systemBlue`），`working` 仍是 template 走系统色。
 
 **坑 2（耗电）**：旧实现每 tick 调用 `workingIcon()` / `overtimeIcon()` 工厂方法，里面走一遍 `NSImage(systemSymbolName:)` + `withSymbolConfiguration()` —— 每秒两次 NSImage 分配，每小时 7200 次。状态基本不变，纯粹浪费。
 
-**修复 2**：`StatusBarController` 在 `init` 里 `makeWorkingIcon()` / `makeOvertimeIcon()` 各算一次，存为 `workingImage` / `overtimeImage` 实例属性；`setState(_:)` 只做一次指针切换。
+**修复 2**：`StatusBarController` 在 `init` 里 `makeWorkingIcon()` / `makeOvertimeIcon()` / `makeRestedIcon()` 各算一次，存为 `workingImage` / `overtimeImage` / `restedImage` 实例属性；`setState(_:)` 只做一次指针切换。
 
 ```swift
 private static let iconConfig = NSImage.SymbolConfiguration(pointSize: 18, weight: .regular)
 private let workingImage: NSImage
 private let overtimeImage: NSImage
+private let restedImage: NSImage
 
 init(...) {
     self.workingImage = StatusBarController.makeWorkingIcon()
     self.overtimeImage = StatusBarController.makeOvertimeIcon()
+    self.restedImage = StatusBarController.makeRestedIcon()
 }
 
-func setState(_ state: StatusState) {
-    statusItem.button?.image = (state == .overtime) ? overtimeImage : workingImage
+func setState(_ state: StatusState, animated: Bool = true) {
+    // ...
+    // .overtime 时若 previous != .overtime 启动闪烁（见下）
 }
 ```
 
-**测试**：smoke test 读 icon 的 bitmap 像素，断言 >30% 的不透明像素 R 通道占主导（`r > 0.5 && r > g+0.15 && r > b+0.15`）。把 icon 状态直接 dump 到 `/tmp/yaotong-overtime-icon.png` / `/tmp/yaotong-working-icon.png` 供视觉验证。
+**超时入口的闪烁动画**：仅在状态从"非超时"跨入"超时"那一次触发——`setState` 内部用 `currentState` 记录上一次状态，跨入时调度一个 `Timer(timeInterval: 0.18, repeats: true)`，按 `[red, nil, red, nil, red, nil, red(settle)]` 交替切换 `statusItem.button?.image`；最后一次回调把 `flashTimer` 置空、把 `image` 锁定为红色。同一超时期间的后续 tick 走"长超时"分支（`previous == .overtime`），**不再重新闪烁**。
+
+切换到任何其他状态都会先 `cancelFlash()`，timer 内部再用 `currentState == .overtime && flashTimer === timer` 双保险防止状态中途变化的竞态。`setState(_:animated: false)` 给 smoke test 跳过闪烁直接拿到稳态图像，避免跟 Timer 赛跑。
+
+**测试**：smoke test 读 icon 的 bitmap 像素，对每种颜色分别断言 >30% 的不透明像素 R/B 通道占主导。把 icon 状态直接 dump 到 `/tmp/yaotong-overtime-icon.png` / `/tmp/yaotong-rested-icon.png` / `/tmp/yaotong-working-icon.png` 供视觉验证。
 
 ### 4.3 状态机：墙钟工作 + 休息后的活动门
 
@@ -123,9 +130,10 @@ func setState(_ state: StatusState) {
 - **`restTime` = 自上次活动以来的空闲时长**。活动时归零，空闲时取系统的 `idleSeconds`。
 - **`waitingForActivity`**：布尔门。休息判定命中后置 true，期间 `workTime` 保持 0；下一次活动 tick 释放门，工作下一 tick 重新开始累加。
 
-`tick(now:idleSeconds:isPaused:)` 返回 `StatusState`：
+`tick(now:idleSeconds:isPaused:)` 返回 `StatusState`（三态）：
 - `overtime`：当 `workTime >= workThreshold`
-- `working`：其他
+- `rested`：`waitingForActivity` 门已挂上（休息判定命中、或 `handleSleepWake` 触发）—— 跟"正常工作"区分开，让 UI 显示蓝色
+- `working`：其他（工作计时从 0 累加的常态、暂停态、门刚释放那一 tick）
 
 按"刚刚跨过"模式触发事件 `lastEvent: StateMachineEvent`：
 - `workSessionStarted` —— `workTime` 从 0 → 1，或"等待活动"门释放后第一 tick
@@ -149,7 +157,7 @@ func setState(_ state: StatusState) {
 
 `AppDelegate` 持 `lastTickWallTime: Date?`，第一次 tick 后是 `Date()`，后续 tick 算 `gap = now - last`。`gap > sleepGapThreshold (2.0s)` → `os_log` + `handleSleepWake()`。阈值取 2s 是因为：1s timer + 0.1s tolerance + 调度抖动 ≤ 1.5s，2s 留出裕度过滤掉正常 jitter。
 
-`didWake` 通知主要是**写日志**用（精确记录 `系统唤醒` 事件），同时 `setState(.working)` 强制刷一次图标让用户立刻看到白色。
+`didWake` 通知主要是**写日志**用（精确记录 `系统唤醒` 事件），同时 `setState(.rested)` 强制刷一次图标让用户立刻看到蓝色——和状态机的"门已挂上"语义一致。
 
 ### 4.4 主界面窗口：SwiftUI + AppKit 桥接 + Dock 联动
 
@@ -267,9 +275,10 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 集成测试
 | 优化点 | 旧实现 | 新实现 | 节省 |
 |--------|--------|--------|------|
 | `CGEventSource` 调用 | 7 次/tick（始终查 7 个类型） | 1 次/tick（无 per-type tracking） | **~7×** |
-| `NSImage` 分配 | 2 次/tick（每状态各一次） | 2 次/启动（缓存复用） | **~3600×** |
+| `NSImage` 分配 | 2 次/tick（每状态各一次） | 3 次/启动（缓存复用：white/red/blue） | **~3600×** |
 | `os_log` 系统调用 | 每次活动事件 1 次 | 只写状态机事件（按需）+ 启动 sentinel + 休眠 gap | 大幅下降 |
 | Timer wakeup | 0 tolerance | 100ms tolerance，允许系统合并 | 小幅下降 |
+| 超时闪烁 | n/a | 仅在 `previous != .overtime` 那次 tick 跑一次 0.18s × 5 步的 Timer；长超时期间 0 开销 | 0 持续成本 |
 
 ---
 
@@ -284,12 +293,13 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 集成测试
 
 ## 9. 修订记录（技术）
 
-完整修订历史见 `git log`。本文档是 2026-06-05 的最终版，反映当前实现：
+完整修订历史见 `git log`。本文档是 2026-06-08 的最终版，反映当前实现：
 
 **功能**
 - `StateMachine`：墙钟工作 + 休息空闲 + `waitingForActivity` 门
 - `ActivityMonitor`：CGEventSource，sample() 返回 `idle`，1 call/tick 不区分活动类型
-- `StatusBarController`：`circle.fill` 18pt，红色通过 `paletteColors` 烧进 image，**两个 NSImage 构造一次后缓存**
+- `StatusBarController`：`circle.fill` 18pt，红/蓝通过 `paletteColors` 烧进 image，**三个 NSImage 构造一次后缓存**；`.overtime` 入口跑 0.18s × 5 步的红/空闪烁再稳定
+- `StatusState` 升级为**三态**（`.working` / `.overtime` / `.rested`）：休息判定命中、`handleSleepWake` 后返回 `.rested`，让 UI 切到蓝色；用户下一次活动后回到 `.working`（白色）
 - `MainWindowController`：启动后自动弹出，SwiftUI + AppKit 桥接；**Dock 图标随窗口状态切换**（`.regular` ↔ `.accessory`）
 - 状态机事件（`workSessionStarted` / `workSessionReset` / `overtimeReached`）通过 `os_log` 写入 `local.yaotong` subsystem
 - **重启入口**：主界面 + 菜单的"重启 腰痛"按钮；`sh -c "sleep 0.3 && open -n <bundle>" + NSApp.terminate`
@@ -297,7 +307,7 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 集成测试
 - **暂停不持久化**：`isPaused` 是纯内存属性，每次启动默认 `false`（运行中）
 - **休息时长选项**：`[1, 2, 5, 10, 15, 20, 30, 45, 60]` 分钟（多了 2 分钟档）
 - **活动类型日志**（12 种 CGEventType × 5s 节流）—— 移除（高频噪音，状态机事件已覆盖）
-- **休眠 / 唤醒处理**：`StateMachine.handleSleepWake()` 把"系统睡过了"当"已充分休息"——`workTime = 0` + 挂等待活动门。`AppDelegate` 用 wall-clock gap（>2s）+ `NSWorkspace.didWakeNotification` 双路检测，互为兜底
+- **休眠 / 唤醒处理**：`StateMachine.handleSleepWake()` 把"系统睡过了"当"已充分休息"——`workTime = 0` + 挂等待活动门，**状态机返回 `.rested` 让图标立刻变蓝**。`AppDelegate` 用 wall-clock gap（>2s）+ `NSWorkspace.didWakeNotification` 双路检测，互为兜底
 - **版本检查**：`UpdateChecker`（async 网络 + semver + 节流）+ `UpdatePrompt`（NSAlert 渲染）。启动 5s 后后台静默检查（24h 节流），菜单/主界面手动点击走完整结果（6h 节流兜底防滥用）。默认查 GitHub Releases API，`YT_UPDATE_REPO=owner/repo` 环境变量覆盖
 
 **已移除（多余设计）**
