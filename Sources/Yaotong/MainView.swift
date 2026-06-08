@@ -167,7 +167,7 @@ struct MainView: View {
                 Text(running ? "运行中" : "已暂停")
                     .font(.headline)
                 Spacer()
-                Button(running ? "暂停腰痛" : "开始腰痛") {
+                Button(running ? "停止腰痛" : "开始腰痛") {
                     config.togglePause()
                 }
             }

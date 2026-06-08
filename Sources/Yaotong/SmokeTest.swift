@@ -187,12 +187,42 @@ enum SmokeTest {
         controller.rebuildMenu()
         let menuTitles = controller.statusItem.menu?.items.map { $0.title } ?? []
         check(
-            "click icon: menu has '工作时长' item",
-            menuTitles.contains(where: { $0.contains("工作时长") })
+            "click icon: menu has '工作计时' item",
+            menuTitles.contains(where: { $0.contains("工作计时") })
         )
         check(
-            "click icon: menu has '休息时长' item",
-            menuTitles.contains(where: { $0.contains("休息时长") })
+            "click icon: menu has '休息计时' item",
+            menuTitles.contains(where: { $0.contains("休息计时") })
+        )
+        // The timer items show the current work/rest times formatted
+        // as MM:SS. Default timerProvider returns (0, 0), so both
+        // items should read 00:00 on a fresh build.
+        check(
+            "click icon: work-timer item shows MM:SS formatted time",
+            menuTitles.contains(where: { $0.contains("工作计时：00:00") })
+        )
+        check(
+            "click icon: rest-timer item shows MM:SS formatted time",
+            menuTitles.contains(where: { $0.contains("休息计时：00:00") })
+        )
+        // A second controller wired to a real provider: the menu
+        // should pick up the supplied work/rest seconds when its
+        // `menuNeedsUpdate` callback fires (simulated here by
+        // rebuilding the menu — the callback calls into the same
+        // `timerProvider` closure).
+        let liveController = StatusBarController(
+            config: config,
+            mainWindow: mainWindow,
+            timerProvider: { (125, 7) }   // 2:05 working, 0:07 resting
+        )
+        let liveTitles = liveController.statusItem.menu?.items.map { $0.title } ?? []
+        check(
+            "live timer: work item reflects the provider's value (MM:SS)",
+            liveTitles.contains(where: { $0.contains("工作计时：02:05") })
+        )
+        check(
+            "live timer: rest item reflects the provider's value (MM:SS)",
+            liveTitles.contains(where: { $0.contains("休息计时：00:07") })
         )
         // The pause menu item's label flips based on `shouldPause(now:)`
         // — outside work hours the label reads "开始腰痛" (auto-paused
@@ -200,8 +230,63 @@ enum SmokeTest {
         // present, not a specific one.
         check(
             "click icon: menu has a pause/start toggle item",
-            menuTitles.contains(where: { $0.contains("暂停腰痛") || $0.contains("开始腰痛") })
+            menuTitles.contains(where: { $0.contains("停止腰痛") || $0.contains("开始腰痛") })
         )
+        // The pause/start label must reflect `config.isPaused` at
+        // display time. We start unpaused, fire the togglePause
+        // action, and then drive the NSMenuDelegate hook the way
+        // AppKit does — by calling menuNeedsUpdate on the menu's
+        // delegate. The label should now read "开始腰痛".
+        config.isPaused = false
+        controller.rebuildMenu()
+        let pauseItem = controller.statusItem.menu?.items.first {
+            $0.title.contains("停止腰痛") || $0.title.contains("开始腰痛")
+        }
+        check(
+            "click pause: starts unpaused, label is '停止腰痛'",
+            pauseItem?.title == "停止腰痛",
+            "got '\(pauseItem?.title ?? "<nil>")'"
+        )
+        // Simulate the user clicking the pause item. The target/action
+        // plumbing normally fires the selector via the run loop;
+        // invoking it directly is the test equivalent.
+        _ = pauseItem?.target?.perform(pauseItem?.action, with: pauseItem)
+        check(
+            "click pause: config.isPaused flipped to true after click",
+            config.isPaused == true
+        )
+        // AppKit calls menuNeedsUpdate just before presenting the
+        // menu. The delegate hook is private on NSObject — but the
+        // controller is the menu's delegate, so we dispatch through
+        // the protocol witness by calling menuNeedsUpdate via the
+        // menu's delegate property.
+        if let menu = controller.statusItem.menu, let delegate = menu.delegate as? StatusBarController {
+            delegate.menuNeedsUpdate(menu)
+        }
+        let afterClick = controller.statusItem.menu?.items.first {
+            $0.title.contains("停止腰痛") || $0.title.contains("开始腰痛")
+        }
+        check(
+            "click pause: next menu show flips label to '开始腰痛'",
+            afterClick?.title == "开始腰痛",
+            "got '\(afterClick?.title ?? "<nil>")'"
+        )
+        // And round-trip back.
+        _ = afterClick?.target?.perform(afterClick?.action, with: afterClick)
+        if let menu = controller.statusItem.menu, let delegate = menu.delegate as? StatusBarController {
+            delegate.menuNeedsUpdate(menu)
+        }
+        let afterSecondClick = controller.statusItem.menu?.items.first {
+            $0.title.contains("停止腰痛") || $0.title.contains("开始腰痛")
+        }
+        check(
+            "click pause: second click flips label back to '停止腰痛'",
+            afterSecondClick?.title == "停止腰痛",
+            "got '\(afterSecondClick?.title ?? "<nil>")'"
+        )
+        // Reset for downstream tests.
+        config.isPaused = false
+        controller.rebuildMenu()
         // No emoji in menu titles — the system renders them in the
         // menu font and they look out of place next to the Chinese
         // labels.
@@ -222,24 +307,14 @@ enum SmokeTest {
             "click icon: menu has '退出 腰痛' item",
             menuTitles.contains(where: { $0.contains("退出 腰痛") })
         )
-        let workItem = controller.statusItem.menu?.items.first { $0.title.contains("工作时长") }
-        check(
-            "click icon: work-duration submenu has all allowed options",
-            workItem?.submenu?.items.count == ConfigStore.allowedWorkMinuteOptions.count
-        )
 
         // ---- §6.3: 修改工作时长后立即生效
         let originalWork = config.workMinutes
         let newWork = originalWork == 45 ? 15 : 45
         config.workMinutes = newWork
         // AppDelegate wires this up via `config.onChange`; the smoke test
-        // goes around AppDelegate so we have to rebuild the menu by hand.
-        controller.rebuildMenu()
-        let updatedTitles = controller.statusItem.menu?.items.map { $0.title } ?? []
-        check(
-            "modify work duration: menu title updates to reflect new value",
-            updatedTitles.contains(where: { $0.contains("\(newWork)") })
-        )
+        // goes around AppDelegate so we recreate the state machine by
+        // hand (the production path would do this for us).
         sm = StateMachine(workMinutes: newWork, restMinutes: 10)
         let fastNow = Date(timeIntervalSince1970: 2_000_000_000)
         for i in 0..<(newWork * 60) {
@@ -276,7 +351,7 @@ enum SmokeTest {
             reloaded.restMinutes == 15
         )
 
-        // ---- §6.3: "暂停腰痛"后状态机冻结
+        // ---- §6.3: "停止腰痛"后状态机冻结
         let pauseStart = Date()
         config.isPaused = true
         sm = StateMachine(workMinutes: 30, restMinutes: 10)

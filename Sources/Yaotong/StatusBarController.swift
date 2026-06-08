@@ -2,7 +2,7 @@ import AppKit
 
 /// Owns the `NSStatusItem` (the icon in the macOS menu bar) and its dropdown
 /// menu. Pure AppKit glue — does no work/rest logic of its own.
-final class StatusBarController: NSObject {
+final class StatusBarController: NSObject, NSMenuDelegate {
 
     // MARK: - Public
 
@@ -45,6 +45,7 @@ final class StatusBarController: NSObject {
     func rebuildMenu() {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.delegate = self
 
         // 第一项：显示主界面
         if mainWindow != nil {
@@ -76,47 +77,39 @@ final class StatusBarController: NSObject {
         menu.addItem(sourceItem)
         menu.addItem(.separator())
 
-        // Work duration submenu
-        let workItem = NSMenuItem(
-            title: "工作时长：\(config.workMinutes) 分钟",
+        // 工作计时 — 显示当前 workTime（不实时刷新，仅在菜单弹出时取值）
+        let snapshot = timerProvider()
+        workTimerItem = NSMenuItem(
+            title: "工作计时：\(Self.formatMMSS(snapshot.work))",
             action: nil,
             keyEquivalent: ""
         )
-        workItem.submenu = makeDurationSubmenu(
-            options: ConfigStore.allowedWorkMinuteOptions,
-            current: config.workMinutes,
-            selectHandler: { [weak self] minutes in
-                self?.config.workMinutes = minutes
-            }
-        )
-        menu.addItem(workItem)
+        workTimerItem?.isEnabled = false
+        menu.addItem(workTimerItem!)
 
-        // Rest duration submenu
-        let restItem = NSMenuItem(
-            title: "休息时长：\(config.restMinutes) 分钟",
+        // 休息计时 — 显示当前 restTime（同上）
+        restTimerItem = NSMenuItem(
+            title: "休息计时：\(Self.formatMMSS(snapshot.rest))",
             action: nil,
             keyEquivalent: ""
         )
-        restItem.submenu = makeDurationSubmenu(
-            options: ConfigStore.allowedRestMinuteOptions,
-            current: config.restMinutes,
-            selectHandler: { [weak self] minutes in
-                self?.config.restMinutes = minutes
-            }
-        )
-        menu.addItem(restItem)
+        restTimerItem?.isEnabled = false
+        menu.addItem(restTimerItem!)
 
         menu.addItem(.separator())
 
-        // Pause / resume (pure toggle, no auto-resume)
-        let pauseTitle = config.isPaused ? "开始腰痛" : "暂停腰痛"
-        let pauseItem = NSMenuItem(
-            title: pauseTitle,
+        // Pause / resume (pure toggle, no auto-resume). Title flips
+        // based on `config.isPaused`; we cache the item so
+        // `menuNeedsUpdate` can keep the label current regardless of
+        // whether the user toggled via the menu bar or the main
+        // window's button.
+        pauseItem = NSMenuItem(
+            title: Self.pauseTitle(isPaused: config.isPaused),
             action: #selector(togglePause(_:)),
             keyEquivalent: ""
         )
-        pauseItem.target = self
-        menu.addItem(pauseItem)
+        pauseItem?.target = self
+        menu.addItem(pauseItem!)
 
         menu.addItem(.separator())
 
@@ -145,6 +138,7 @@ final class StatusBarController: NSObject {
 
     private let config: ConfigStore
     private let mainWindow: MainWindowController?
+    private let timerProvider: () -> (work: TimeInterval, rest: TimeInterval)
     private let onRestart: () -> Void
     private let onCheckForUpdates: () -> Void
     private let onOpenSource: () -> Void
@@ -166,13 +160,25 @@ final class StatusBarController: NSObject {
     /// `nil` when no flash is in progress.
     private var flashTimer: Timer?
 
+    /// Strong refs to the three items whose titles depend on live
+    /// state, so `menuNeedsUpdate` can refresh them just before the
+    /// menu pops up. The menu also retains each via `addItem`; these
+    /// references are rebound on every `rebuildMenu()`, at which
+    /// point the previous item (no longer reachable through the menu
+    /// either) is freed.
+    private var workTimerItem: NSMenuItem?
+    private var restTimerItem: NSMenuItem?
+    private var pauseItem: NSMenuItem?
+
     init(config: ConfigStore,
          mainWindow: MainWindowController? = nil,
+         timerProvider: @escaping () -> (work: TimeInterval, rest: TimeInterval) = { (0, 0) },
          onRestart: @escaping () -> Void = {},
          onCheckForUpdates: @escaping () -> Void = {},
          onOpenSource: @escaping () -> Void = {}) {
         self.config = config
         self.mainWindow = mainWindow
+        self.timerProvider = timerProvider
         self.onRestart = onRestart
         self.onCheckForUpdates = onCheckForUpdates
         self.onOpenSource = onOpenSource
@@ -294,33 +300,41 @@ final class StatusBarController: NSObject {
         flashTimer = nil
     }
 
-    private func makeDurationSubmenu(
-        options: [Int],
-        current: Int,
-        selectHandler: @escaping (Int) -> Void
-    ) -> NSMenu {
-        let submenu = NSMenu()
-        submenu.autoenablesItems = false
-        for minutes in options {
-            let item = NSMenuItem(
-                title: "\(minutes) 分钟",
-                action: #selector(durationPicked(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = DurationChoice(minutes: minutes, handler: selectHandler)
-            item.state = (minutes == current) ? .on : .off
-            submenu.addItem(item)
-        }
-        return submenu
+    // MARK: - NSMenuDelegate
+
+    /// Called by AppKit just before the dropdown menu is shown to the
+    /// user. This is the spot to refresh anything that may have changed
+    /// since the last `rebuildMenu()` — for us, the work/rest timer
+    /// values *and* the pause/start label (the user may have toggled
+    /// pause from the main window, leaving the cached menu title
+    /// stale). We deliberately do *not* rebuild the whole menu on
+    /// every tick: that would be 86 400 NSMenuItem allocations per
+    /// day, and the only thing the user actually needs to see updated
+    /// in real time is these three labels.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let snapshot = timerProvider()
+        workTimerItem?.title = "工作计时：\(Self.formatMMSS(snapshot.work))"
+        restTimerItem?.title = "休息计时：\(Self.formatMMSS(snapshot.rest))"
+        pauseItem?.title = Self.pauseTitle(isPaused: config.isPaused)
+    }
+
+    /// Format a `TimeInterval` as `MM:SS`. Seconds-only resolution —
+    /// sub-second precision would flicker twice a second and gain the
+    /// user nothing.
+    private static func formatMMSS(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        let m = total / 60
+        let s = total % 60
+        return String(format: "%02d:%02d", m, s)
+    }
+
+    /// Pause/start label. Centralised so `rebuildMenu` and
+    /// `menuNeedsUpdate` can't drift apart on a future wording tweak.
+    private static func pauseTitle(isPaused: Bool) -> String {
+        isPaused ? "开始腰痛" : "停止腰痛"
     }
 
     // MARK: - Actions
-
-    @objc private func durationPicked(_ sender: NSMenuItem) {
-        guard let choice = sender.representedObject as? DurationChoice else { return }
-        choice.handler(choice.minutes)
-    }
 
     @objc private func togglePause(_ sender: NSMenuItem) {
         config.togglePause()
@@ -344,16 +358,5 @@ final class StatusBarController: NSObject {
 
     @objc private func openSource(_ sender: NSMenuItem) {
         onOpenSource()
-    }
-
-    // MARK: - Private types
-
-    private final class DurationChoice {
-        let minutes: Int
-        let handler: (Int) -> Void
-        init(minutes: Int, handler: @escaping (Int) -> Void) {
-            self.minutes = minutes
-            self.handler = handler
-        }
     }
 }

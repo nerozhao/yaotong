@@ -80,6 +80,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar = StatusBarController(
             config: config,
             mainWindow: mainWindow,
+            timerProvider: { [weak self] in
+                // Captures `self` weakly so a deallocated AppDelegate
+                // never produces a dangling pointer. The state machine
+                // reference is read fresh on every call — when the
+                // user changes the work/rest thresholds we swap in a
+                // new instance, and this closure transparently picks
+                // it up without any extra wiring.
+                guard let sm = self?.stateMachine else { return (0, 0) }
+                return (sm.workTime, sm.restTime)
+            },
             onRestart: { [weak self] in
                 self?.restartApp()
             },
@@ -91,7 +101,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
 
-        // Rebuild state machine + menu when the user changes a setting.
+        // Rebuild state machine when the user changes a setting. The
+        // status bar menu no longer needs rebuilding here: its only
+        // live values (work/rest timers) are read through the
+        // `timerProvider` closure, which captures the new machine
+        // automatically on its next call.
         config.onChange = { [weak self] newConfig in
             self?.handleConfigChange(newConfig)
         }
@@ -219,7 +233,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             workMinutes: newConfig.workMinutes,
             restMinutes: newConfig.restMinutes
         )
-        statusBar.rebuildMenu()
     }
 
     // MARK: - Restart
