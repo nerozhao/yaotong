@@ -55,19 +55,30 @@ final class MainWindowController {
         win.title = "腰痛"
         win.contentViewController = host
         win.isReleasedWhenClosed = false
-        // Center on the main screen explicitly — `center()` can land above
-        // the visible area on multi-monitor setups with the menu bar at the
-        // top.
-        if let screen = NSScreen.main {
-            let screenFrame = screen.visibleFrame
-            let windowSize = win.frame.size
-            let origin = NSPoint(
-                x: screenFrame.midX - windowSize.width / 2,
-                y: screenFrame.midY - windowSize.height / 2 + 100
-            )
-            win.setFrameOrigin(origin)
-        } else {
-            win.center()
+        // Persist the last frame in UserDefaults and restore it on the
+        // next open. `setFrameAutosaveName` returns `true` when a saved
+        // frame was loaded; on a fresh install we fall back to centering
+        // on the main screen (which also avoids `center()` landing above
+        // the visible area on multi-monitor setups with the menu bar at
+        // the top).
+        // `setFrameAutosaveName` loads the saved frame from UserDefaults
+        // (returning `true`) and writes the window's frame back on every
+        // move/resize/close. On a fresh install (no saved frame) we fall
+        // back to centering on the main screen — also avoids `center()`
+        // landing above the visible area on multi-monitor setups with the
+        // menu bar at the top.
+        if !win.setFrameAutosaveName("YaotongMainWindow") {
+            if let screen = NSScreen.main {
+                let screenFrame = screen.visibleFrame
+                let windowSize = win.frame.size
+                let origin = NSPoint(
+                    x: screenFrame.midX - windowSize.width / 2,
+                    y: screenFrame.midY - windowSize.height / 2 + 100
+                )
+                win.setFrameOrigin(origin)
+            } else {
+                win.center()
+            }
         }
 
         self.window = win

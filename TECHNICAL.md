@@ -163,7 +163,7 @@ func setState(_ state: StatusState, animated: Bool = true) {
 
 - `MainWindowController` 用 `NSHostingController` 把 `MainView` 塞进 `NSWindow.contentViewController`
 - 启动后 `DispatchQueue.main.async { mainWindow.open() }` 自动弹出
-- 窗口位置用 `NSScreen.main.visibleFrame` 手动计算中心（避免 `center()` 在多屏下落到屏外）
+- 窗口位置用 `NSWindow.setFrameAutosaveName("YaotongMainWindow")` 自动持久化（UserDefaults），下次 `open()` 时若返回值 `false`（无存档）才退回 `NSScreen.main.visibleFrame` 手动算中心（避免 `center()` 在多屏下落到屏外）
 - `MainView` 用 `@ObservedObject` 绑定 `ConfigStore` 和 `AppState`；Picker 改动通过 ConfigStore 写到 UserDefaults
 - 关闭主窗口（点 X）不会退出 App；点"退出 腰痛"按钮调用 `NSApp.terminate(nil)`；点"重启 腰痛"按钮调用 `AppDelegate.restartApp()`
 

@@ -164,7 +164,7 @@ struct MainView: View {
         let running = !config.isPaused
         return GroupBox {
             HStack {
-                Text(running ? "运行中" : "已暂停")
+                Text(running ? "运行中" : "已停止")
                     .font(.headline)
                 Spacer()
                 Button(running ? "停止腰痛" : "开始腰痛") {
