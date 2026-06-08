@@ -31,6 +31,7 @@ log show --predicate 'subsystem == "local.yaotong"' --info --last 5m   # 查日�
 - 菜单栏图标（**构造一次缓存复用**）：[Sources/Yaotong/StatusBarController.swift](Sources/Yaotong/StatusBarController.swift)
 - 配置持久化（`isPaused` **不**持久化）：[Sources/Yaotong/ConfigStore.swift](Sources/Yaotong/ConfigStore.swift)
 - 主界面：[Sources/Yaotong/MainView.swift](Sources/Yaotong/MainView.swift)
+- 系统通知（`UNUserNotificationCenter` 包装）：[Sources/Yaotong/Notifier.swift](Sources/Yaotong/Notifier.swift)
 - 集成 smoke：[Sources/Yaotong/SmokeTest.swift](Sources/Yaotong/SmokeTest.swift)
 
 ## 关键约束（踩过的坑）
@@ -43,6 +44,7 @@ log show --predicate 'subsystem == "local.yaotong"' --info --last 5m   # 查日�
 6. **状态机事件用 `os_log`**（subsystem `local.yaotong`、category `activity`），**不写活动类型日志**（已移除，会变噪音）。
 7. 用户可见文案**中文为主**（"腰痛"、"工作计时"、"停止腰痛"），代码标识符英文。
 8. **不要照搬大文档内容进 CLAUDE.md**——本文件是速查，重复会浪费上下文窗口。
+9. **通知事件在 `AppDelegate.tick()` 末尾的 switch 里 dispatch**：`overtimeReached` → `Notifier.notifyOvertime(elapsed:)`（**内部先 `removeAllDeliveredNotifications` 再 `add`**，结构上保证通知中心最多一条）；`workSessionReset` → `Notifier.clearDelivered()`。这两个事件就是通知的全部入口——不响应休眠/唤醒/阈值变更/启动。**不要**让状态机直接耦合 `UNUserNotificationCenter`（状态机保持纯函数，单元测试才能 headless 跑）。
 
 ## 修改前自问（同步更新主文档）
 
@@ -53,7 +55,7 @@ log show --predicate 'subsystem == "local.yaotong"' --info --last 5m   # 查日�
 | 配置 key 改动 | 检查 [ConfigStore.swift](Sources/Yaotong/ConfigStore.swift) 迁移逻辑 |
 | 公共 API 改动 | 更新 [TECHNICAL.md §3](TECHNICAL.md) 文件结构表 |
 | 产品决策（新增/推翻） | 追加到 [REQUIREMENTS.md §7](REQUIREMENTS.md) 决策表 |
-| 版本号 bump | `Package.swift` + `build.sh` + 写一条 `git tag`（若要） |
+| 版本号 bump | `Resources/Info.plist`（`CFBundleShortVersionString` + `CFBundleVersion`） + 写一条 `git tag`（若要） |
 
 ## 结束会话协议
 

@@ -53,6 +53,7 @@ Sources/Yaotong/
 ├── MainWindowController.swift   NSWindow + NSHostingController, 启动后自动打开
 ├── UpdateChecker.swift          async 网络检查 + semver 比较 + UserDefaults 节流
 ├── UpdatePrompt.swift           @MainActor NSAlert 渲染（结果 + 源 → 弹/不弹）
+├── Notifier.swift               UNUserNotificationCenter 包装, 工作/休息事件分发
 └── SmokeTest.swift              --smoke-test 模式, 驱动 §6.2 集成测试
 Tests/YaotongTests/
 ├── StateMachineTests.swift      计时器 + 门 + 事件 + 跨阈值
@@ -148,16 +149,9 @@ func setState(_ state: StatusState, animated: Bool = true) {
 
 `StateMachine.handleSleepWake()` 把"系统睡过了"当成"已充分休息"事件：`workTime = 0`、`restTime = 0`、挂上"等待活动"门、`lastEvent = .workSessionReset(idleSeconds: 0)`。下一次活动 tick 释放门，再下 tick 工作才重新累加。逻辑跟用户离开工位休息 10+ 分钟触发的 reset 完全一致——**长睡 = 长休息**。
 
-触发路径有两条（并用，互为兜底）：
+`AppDelegate` 在 `tick()` 里做墙钟 gap 检测：持 `lastTickWallTime: Date?`，每次 tick 算 `gap = now - last`。`gap > 2.0s` → `os_log` + `handleSleepWake()`。阈值取 2s 是因为：1s timer + 0.1s tolerance + 调度抖动 ≤ 1.5s，2s 留出裕度过滤掉正常 jitter。
 
-| 路径 | 来源 | 覆盖 | 盲区 |
-|------|------|------|------|
-| 墙钟 gap 检测 | `AppDelegate.tick()` 每次拿 `Date()` 算跟上次 tick 的间隔 | 所有 sleep（pmset / 合盖 / 断电 / force sleep / hibernate） | 短睡（<2s）被 tolerance 屏蔽；timer 凑巧在被 wake 紧跟着 fire 时 gap 可能很小 |
-| `NSWorkspace.didWakeNotification` | 系统保证送达 | 正常 sleep/wake、idle 唤醒 | 极少数 hard power event 可能漏 |
-
-`AppDelegate` 持 `lastTickWallTime: Date?`，第一次 tick 后是 `Date()`，后续 tick 算 `gap = now - last`。`gap > sleepGapThreshold (2.0s)` → `os_log` + `handleSleepWake()`。阈值取 2s 是因为：1s timer + 0.1s tolerance + 调度抖动 ≤ 1.5s，2s 留出裕度过滤掉正常 jitter。
-
-`didWake` 通知主要是**写日志**用（精确记录 `系统唤醒` 事件），同时 `setState(.rested)` 强制刷一次图标让用户立刻看到蓝色——和状态机的"门已挂上"语义一致。
+不再监听 `NSWorkspace.didWakeNotification`——gáp 检测的覆盖面足够（本机不会 hard power event 后还能从休眠恢复到同一进程），省掉一个系统通知的 bridge。
 
 ### 4.4 主界面窗口：SwiftUI + AppKit 桥接 + Dock 联动
 
@@ -249,6 +243,33 @@ func restartApp() {
 - `shouldShow` 4 源 × 4 结果的弹/不弹决策矩阵
 - `State` 在 `UserDefaults` 套件里 round-trip
 
+### 4.7 系统通知：Notifier
+
+`Notifier`（[Sources/Yaotong/Notifier.swift](Sources/Yaotong/Notifier.swift)）封装 `UNUserNotificationCenter.current()`，是图标颜色之外的第二提醒通道——菜单栏图标被遮挡时、用户视线不在屏幕顶部时，banner 仍能进通知中心。
+
+**事件 → 通知的映射**（在 `AppDelegate.tick()` 末尾的 `switch` 里完成，状态机保持纯函数）：
+
+| 状态机事件 | 通知动作 |
+|---|---|
+| `overtimeReached(elapsed:)` | `Notifier.notifyOvertime(elapsed:)` — **先清掉旧通知，再弹新通知**（保证通知中心最多只有一条） |
+| `workSessionReset` | `Notifier.clearDelivered()` — 用户休息够了，清掉 |
+
+只有这两个事件驱动通知——`AppDelegate` **不**在启动、休眠、唤醒、阈值变化时主动清通知。
+
+**提醒前清理的结构性保证**：`notifyOvertime` 内部在 `add` 之前先调 `center.removeAllDeliveredNotifications()`——这样不管状态机因为什么情况再次进入超时，通知中心都不会堆多条。配合固定 `identifier = "yaotong.overtime"`，重复请求本身就会被替换为同一通知条目，叠加清理前置等于双保险。
+
+**`workSessionReset` → clear 是 UX 加分项**：从结构性上看，下一次 `overtimeReached` 自然会清掉——这条 case 唯一的价值是"用户真的去休息了，通知应该立刻消失"，让通知更贴近"我去做该做的事"这个反馈循环。
+
+**为什么 `LSUIElement=true` 下也能用**：`UNUserNotificationCenter` 不关心 app 的 activation policy，对 accessory / agent 形态一视同仁。不需要 `Info.plist` 改动——`build.sh` 已有的 ad-hoc 签名 + 固定 bundle id (`local.yaotong.app`) 是必要前提，但都是现有配置。
+
+**测试钩子**（`static var`）：`notifyOvertimeCallCount` / `clearDeliveredCallCount` / `lastNotifiedElapsedSeconds` / `didRequestAuthorization` / `testBypassCenter`。单元测试在 `setUp` 里清零 + 设 `testBypassCenter = true` 短路掉对 `UNUserNotificationCenter.current()` 的访问（headless test binary 调 `current()` 会抛 `NSInternalInconsistencyException`）。**不**在 smoke test 里断言 `UNUserNotificationCenter` 的实际交付——它需要用户授权 + 通知守护进程，headless 跑不出来。
+
+**未做的事**（P2+ 候选）：
+- 无通知中心类别 / 按钮 / 自定义声音——默认 banner + `sound: .default` 够用
+- 无"勿扰时段" / 专注模式联动
+- 无通知偏好开关——保持单一开关的简洁哲学
+- 不响应系统休眠 / 唤醒 / 阈值变化 / 启动——通知就是"工作时间到了" + 休息判定命中时清掉，再简单不过
+
 ---
 
 ## 5. CLI 标志
@@ -309,6 +330,7 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 集成测试
 - **活动类型日志**（12 种 CGEventType × 5s 节流）—— 移除（高频噪音，状态机事件已覆盖）
 - **休眠 / 唤醒处理**：`StateMachine.handleSleepWake()` 把"系统睡过了"当"已充分休息"——`workTime = 0` + 挂等待活动门，**状态机返回 `.rested` 让图标立刻变蓝**。`AppDelegate` 用 wall-clock gap（>2s）+ `NSWorkspace.didWakeNotification` 双路检测，互为兜底
 - **版本检查**：`UpdateChecker`（async 网络 + semver + 节流）+ `UpdatePrompt`（NSAlert 渲染）。启动 5s 后后台静默检查（24h 节流），菜单/主界面手动点击走完整结果（6h 节流兜底防滥用）。默认查 GitHub Releases API，`YT_UPDATE_REPO=owner/repo` 环境变量覆盖
+- **系统消息推送**：`Notifier`（`UNUserNotificationCenter` 包装）——工作计时到达阈值时弹"腰痛提醒"通知，**`notifyOvertime` 内部先 `removeAllDeliveredNotifications` 再 `add`**，结构上保证通知中心最多只有一条；休息判定命中时（`workSessionReset`）也清一次让用户得到"我做了该做的事"的反馈。这两个事件就是通知的全部入口。启动请求通知授权；不监听 `didWakeNotification`、不响应阈值变化、不在休眠/唤醒路径清通知。状态机保持纯函数，事件 → 通知的映射在 `AppDelegate.tick()` 完成。
 
 **已移除（多余设计）**
 - 调试面板（`DebugView` / `DebugWindowController` / `LogStore`）

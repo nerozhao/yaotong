@@ -42,13 +42,17 @@ final class StateMachineTests: XCTestCase {
         for i in 0..<(31 * 60) {
             _ = sm.tick(now: t0.addingTimeInterval(TimeInterval(i)), idleSeconds: 0, isPaused: false)
         }
-        // After 10 minutes of rest, the work session must be reset and we
-        // must be back in .working.
+        // After 10 minutes of rest, the work session is reset and the
+        // post-rest gate is engaged: the icon goes blue (.rested) and
+        // work stays at 0 until the user comes back. A later active
+        // tick is what releases the gate and returns to .working —
+        // covered by `testWorkWaitsForActivityAfterRest` below.
         let tAfter = t0.addingTimeInterval(31 * 60 + 11 * 60)
         let state = sm.tick(now: tAfter, idleSeconds: 11 * 60, isPaused: false)
-        XCTAssertEqual(state, .working)
+        XCTAssertEqual(state, .rested)
         // Rest crossed threshold → work was reset to 0.
         XCTAssertEqual(sm.workTime, 0)
+        XCTAssertTrue(sm.waitingForActivity)
     }
 
     // MARK: - Pause
@@ -131,14 +135,17 @@ final class StateMachineTests: XCTestCase {
         let sm = StateMachine(workMinutes: 30, restMinutes: 10)
         let t0 = Date(timeIntervalSince1970: 0)
         sm.handleSleepWake()
-        // 5 minutes of idle ticks post-sleep: work stays at 0.
+        // 5 minutes of idle ticks post-sleep: work stays at 0, and
+        // the post-rest gate keeps the state at `.rested` (blue)
+        // regardless of how long the user stays away. `.working`
+        // only comes back once the user is active again.
         for i in 0..<(5 * 60) {
             let state = sm.tick(
                 now: t0.addingTimeInterval(TimeInterval(i)),
                 idleSeconds: TimeInterval(i + 1),
                 isPaused: false
             )
-            XCTAssertEqual(state, .working)
+            XCTAssertEqual(state, .rested)
             XCTAssertEqual(sm.workTime, 0)
             XCTAssertTrue(sm.waitingForActivity)
         }
@@ -183,13 +190,16 @@ final class StateMachineTests: XCTestCase {
         for i in 0..<(31 * 60) {
             _ = sm.tick(now: t0.addingTimeInterval(TimeInterval(i)), idleSeconds: 0, isPaused: false)
         }
-        // Now report 42 minutes of idle — crosses the 10-min rest threshold.
+        // Now report 42 minutes of idle — crosses the 10-min rest
+        // threshold. State is `.rested` (post-rest gate engaged), not
+        // `.working` — `.working` only comes back once the user is
+        // active again.
         let state = sm.tick(
             now: t0.addingTimeInterval(TimeInterval(31 * 60 + 42 * 60)),
             idleSeconds: 42 * 60,
             isPaused: false
         )
-        XCTAssertEqual(state, .working)
+        XCTAssertEqual(state, .rested)
         XCTAssertEqual(sm.lastEvent, .workSessionReset(idleSeconds: 42 * 60))
     }
 
@@ -260,22 +270,24 @@ final class StateMachineTests: XCTestCase {
         }
         XCTAssertEqual(sm.workTime, 31 * 60)
         // Now report 11 min idle — rest crosses the threshold, work resets,
-        // and the post-rest gate is engaged.
+        // and the post-rest gate is engaged (state goes to `.rested`).
         let after = sm.tick(
             now: t0.addingTimeInterval(TimeInterval(31 * 60 + 11 * 60)),
             idleSeconds: 11 * 60,
             isPaused: false
         )
-        XCTAssertEqual(after, .working)
+        XCTAssertEqual(after, .rested)
         XCTAssertEqual(sm.workTime, 0)
         XCTAssertTrue(sm.waitingForActivity)
-        // More idle ticks — work stays at 0.
+        // More idle ticks — work stays at 0 and the gate keeps the
+        // state at `.rested`. `.working` only comes back once the
+        // user is active again.
         let stillIdle = sm.tick(
             now: t0.addingTimeInterval(TimeInterval(31 * 60 + 12 * 60)),
             idleSeconds: 12 * 60,
             isPaused: false
         )
-        XCTAssertEqual(stillIdle, .working)
+        XCTAssertEqual(stillIdle, .rested)
         XCTAssertEqual(sm.workTime, 0)
         XCTAssertTrue(sm.waitingForActivity)
         // First active tick — gate releases, work stays at 0 (this is

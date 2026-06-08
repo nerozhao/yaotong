@@ -102,6 +102,11 @@
   - 重启 腰痛
   - 退出 腰痛
 - [x] **配置持久化**：用户设置重启后保留（`UserDefaults`）
+- [x] **系统消息推送**：工作计时到达阈值时弹出 macOS 系统通知
+  - 标题"腰痛提醒"，正文"已经工作了 X分Y秒，起身活动一下吧。"
+  - **提醒前清理**：`notifyOvertime` 内部先 `removeAllDeliveredNotifications` 再 `add`——结构上保证通知中心最多只有一条（不管状态机重入多少次）
+  - 休息判定命中时（`workSessionReset` 事件）再清一次，让用户得到反馈
+  - 启动时请求通知权限（首次会触发系统授权弹窗）
 
 ### 4.2 增强功能（P1）
 
@@ -284,6 +289,7 @@ log show --predicate 'subsystem == "local.yaotong"' --info --last 5m
 | 27 | 版本检查 | ✅ 做（GitHub Releases API，后台静默 + 手动弹窗，节流防滥用） |
 | 28 | 等待活动图标 | ✅ 做（休息判定命中后变蓝，用户下一次输入变白——比白色更明显地区分"被重置"和"正常工作"） |
 | 29 | 超时闪烁提醒 | ✅ 做（变红瞬间闪 3 下再稳定——0.18s × 5 步，不弹窗不发声，靠视觉锚定阈值点） |
+| 30 | 系统消息推送 | ✅ 做（工作超时通知 + **提醒前清理** + 休息判定命中时清通知；`UNUserNotificationCenter`；启动请求授权；不响应休眠/唤醒/阈值变更） |
 
 ---
 
@@ -300,3 +306,4 @@ log show --predicate 'subsystem == "local.yaotong"' --info --last 5m
 - "停止腰痛 / 开始腰痛" 纯开关，不持久化
 - 主界面 + 菜单都有"重启 腰痛"；菜单无 emoji
 - **版本检查**：菜单 + 主界面都有"检查更新…"，启动后 5s 后台静默检查（24h 节流），手动点击完整结果（6h 节流兜底），默认查 GitHub Releases API，可被 `YT_UPDATE_REPO` 环境变量覆盖
+- **系统消息推送**：工作计时到达阈值时通过 `UNUserNotificationCenter` 弹 macOS 系统通知，**提醒前清理**——`notifyOvertime` 内部先 `removeAllDeliveredNotifications` 再 `add`，结构上保证通知中心最多只有一条；休息判定命中时（`workSessionReset`）也清一次。这两个事件就是通知的全部入口——不响应休眠/唤醒/阈值变更/启动

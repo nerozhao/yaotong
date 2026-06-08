@@ -25,14 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let appState = AppState()
     private var mainWindow: MainWindowController!
     private let updateChecker = UpdateChecker()
-
-    /// Wall-clock time of the previous tick. A jump of more than
-    /// `sleepGapThreshold` seconds between two ticks means the system
-    /// was asleep (Foundation timers pause while the machine is
-    /// sleeping) — we treat that as a rested event so the work
-    /// counter doesn't resume mid-cycle after wake.
-    private var lastTickWallTime: Date?
-    private static let sleepGapThreshold: TimeInterval = 2.0
+    private var notifier: Notifier!
 
     /// System log for activity detection — viewable in Console.app or via
     /// `log show --predicate 'subsystem == "local.yaotong"'`.
@@ -58,6 +51,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (filter by `process:Yaotong` or by `subsystem:local.yaotong`).
         os_log("腰痛启动 — 移动鼠标/按键/滚动后会在此 subsystem 出现活动日志",
                log: activityLog, type: .default)
+
+        // Notifier setup: request system-level notification
+        // permission up front. We don't clear delivered banners on
+        // launch — there shouldn't be any since the work counter
+        // starts at 0 and the previous run's notification would
+        // have been cleared on its own rest-reset, but even if
+        // there were, leaving them be is harmless.
+        notifier = Notifier()
+        notifier.requestAuthorizationIfNeeded()
 
         config = ConfigStore()
         stateMachine = StateMachine(
@@ -110,22 +112,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleConfigChange(newConfig)
         }
 
-        // System sleep/wake handling. NSWorkspace.didWakeNotification is
-        // the OS-guaranteed counterpart to wall-clock-gap detection:
-        // either path alone has edge cases (timer coalescing can mask
-        // short sleeps; notifications can be missed on hard power
-        // events), so we use both. The notification is the precise
-        // breadcrumb in the system log; the gap check is the safety net.
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.handleSystemWake()
-            }
-        }
-
         startTicking()
 
         // Auto-open the main window at launch.
@@ -165,23 +151,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func tick() {
         let now = Date()
-
-        // System-sleep detection via wall-clock gap. Foundation timers
-        // pause while the machine is asleep, so a gap much larger than
-        // our 1 s interval (tolerance 0.1 s) means the timer was
-        // suspended — treat the gap as a rested event so the work
-        // counter doesn't resume mid-cycle after wake.
-        if let last = lastTickWallTime {
-            let gap = now.timeIntervalSince(last)
-            if gap > Self.sleepGapThreshold {
-                let secs = Int(gap)
-                os_log("检测到系统休眠 %{public}d 秒 — 视为已充分休息，重置工作计时器并等待活动",
-                       log: activityLog, type: .default, secs)
-                stateMachine.handleSleepWake()
-            }
-        }
-        lastTickWallTime = now
-
         let idle = activity.sample()
         let computed = stateMachine.tick(
             now: now,
@@ -202,28 +171,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if stateMachine.lastEvent != .none {
             os_log("%{public}@", log: activityLog, type: .default, stateMachine.lastEvent.logMessage)
         }
-        // Note: per-event activity logs ("鼠标点击" / "键盘按键" …) are
-        // intentionally suppressed — the throttled 5-second stream was
-        // still noise for normal use. The state-machine events above
-        // cover everything the user actually needs to see in the log.
-    }
-
-    // MARK: - System wake
-
-    /// Called on `NSWorkspace.didWakeNotification`. Mostly we rely on
-    /// the wall-clock-gap detector in `tick()`; this handler exists
-    /// to (a) make wake events visible in the system log and
-    /// (b) cover the rare case where the timer fires before macOS
-    /// updates the wall clock (so the gap stays small) — in which
-    /// case the next-tick gap detector will still catch it.
-    private func handleSystemWake() {
-        os_log("系统唤醒 — 视为已充分休息，重置工作计时器并等待活动",
-               log: activityLog, type: .default)
-        stateMachine.handleSleepWake()
-        // Force one UI refresh so the icon shows the "rested" state
-        // (blue) immediately rather than waiting up to 1 s for the
-        // next tick to pick up the engaged post-rest gate.
-        statusBar.setState(.rested)
+        // Notification dispatch: two state-machine events drive the
+        // notifier and nothing else does — we don't try to handle
+        // sleep/wake/config-change edge cases here.
+        //   - overtimeReached → push the notification (auto-clears
+        //     after 60 s on its own)
+        //   - workSessionReset → clear the delivered banner
+        switch stateMachine.lastEvent {
+        case .overtimeReached(let elapsed):
+            notifier.notifyOvertime(elapsed: elapsed)
+        case .workSessionReset:
+            notifier.clearDelivered()
+        default:
+            break
+        }
     }
 
     // MARK: - Config change handling
