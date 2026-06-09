@@ -206,6 +206,8 @@ func restartApp() {
 
 不签名、不分发、不上架。`Info.plist` 设 `LSUIElement=true`，让 App 不出现在 Dock 也不抢焦点。
 
+**自动更新路径上的二次签名**：`update_helper.sh`（`Resources/update_helper.sh`，`ditto` 把新 bundle 拷到安装路径之后）在 `open -n` 之前对最终落盘的 `.app` 再跑一次 `codesign --force --deep --sign -`。ad-hoc 签名是按"签名时那批字节"绑定的，DMG 经 `hdiutil attach` 挂载再 `ditto` 落到用户机器上之后，Gatekeeper 把它当成"来自未识别开发者"，触发"打开方式"系统设置拦截。在**安装位置**重新签一次，签名身份就指向这台机器上的真实副本，升级后不再弹拦截——`build.sh` 的签名为开发者本地运行服务，`update_helper.sh` 的签名为终端用户的升级流程服务，两个签名对象不同、用途不同，**不能合并**。
+
 ### 4.6 版本检查：UpdateChecker + UpdatePrompt
 
 **数据流**：

@@ -91,6 +91,22 @@ fi
 cleanup
 trap - EXIT
 
+# Re-sign the installed bundle with an ad-hoc identity. The DMG
+# was assembled and signed by build.sh, but the ad-hoc signature
+# is keyed off the exact bytes the build produced — once the
+# bundle lands at a new path (or has been round-tripped through
+# hdiutil attach + ditto), Gatekeeper treats it as "from an
+# unidentified developer" and forces the user to re-approve via
+# System Settings → Privacy & Security. Re-signing in place gives
+# the installed copy a fresh, locally-valid signature so the
+# upgrade launches cleanly.
+#
+# We follow build.sh's lenient `2>/dev/null || true` pattern: if
+# codesign somehow fails, the embedded signature from the DMG is
+# still there as a fallback, and we'd rather launch than block.
+log "ad-hoc signing installed bundle at $APP"
+codesign --force --deep --sign - "$APP" 2>/dev/null || log "ad-hoc sign failed (continuing with bundled signature)"
+
 log "relaunching $APP"
 # `open -n` asks LaunchServices for a new instance even if a
 # single-instance lock might otherwise be picked up. We want
