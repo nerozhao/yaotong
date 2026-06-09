@@ -12,6 +12,7 @@ struct MainView: View {
 
     private let onQuit: () -> Void
     private let onRestart: () -> Void
+    private let onManualReset: () -> Void
     private let onCheckForUpdates: () -> Void
     private let onOpenSource: () -> Void
 
@@ -19,12 +20,14 @@ struct MainView: View {
          appState: AppState,
          onQuit: @escaping () -> Void = {},
          onRestart: @escaping () -> Void = {},
+         onManualReset: @escaping () -> Void = {},
          onCheckForUpdates: @escaping () -> Void = {},
          onOpenSource: @escaping () -> Void = {}) {
         self.config = config
         self.appState = appState
         self.onQuit = onQuit
         self.onRestart = onRestart
+        self.onManualReset = onManualReset
         self.onCheckForUpdates = onCheckForUpdates
         self.onOpenSource = onOpenSource
     }
@@ -167,6 +170,16 @@ struct MainView: View {
                 Text(running ? "运行中" : "已停止")
                     .font(.headline)
                 Spacer()
+                // "重置计时器" — user-declared "I just rested, start
+                // the work timer now". Lives left of the pause toggle
+                // so the two "I'm starting work" / "I'm pausing"
+                // actions are visually grouped. Disabled while paused
+                // — the state machine freezes both counters in pause
+                // mode, so a reset would be a silent no-op.
+                Button("重置计时器") {
+                    onManualReset()
+                }
+                .disabled(!running)
                 Button(running ? "停止腰痛" : "开始腰痛") {
                     config.togglePause()
                 }

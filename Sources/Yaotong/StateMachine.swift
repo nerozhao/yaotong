@@ -160,6 +160,26 @@ final class StateMachine {
         lastEvent = .none
     }
 
+    /// User-initiated "I just rested, start the work timer now" — wired
+    /// to the "重置计时器" button. Distinct from `handleSleepWake` in
+    /// that the user is *at* the keyboard when they press it (they just
+    /// clicked the menu item), so we don't engage the post-rest gate:
+    /// the work counter goes to 0 and the next tick starts accumulating
+    /// immediately. `lastEvent` is left as `.none` so the upcoming
+    /// `0 → 1` transition naturally fires `workSessionStarted`.
+    ///
+    /// Use case: the user has been away from the desk for a while
+    /// (but not long enough to cross the rest threshold), or simply
+    /// wants to declare a fresh session after a short break. They are
+    /// declaring "I am working now" — trust that and let the wall clock
+    /// start.
+    func startFreshSession() {
+        workTime = 0
+        restTime = 0
+        waitingForActivity = false
+        lastEvent = .none
+    }
+
     /// Treat a detected system sleep/wake event as a "rested" event.
     /// The user is presumed to have been away from the desk, so we
     /// reset the work counter and engage the post-rest gate — work

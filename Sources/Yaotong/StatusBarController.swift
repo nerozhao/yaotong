@@ -98,6 +98,20 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        // "重置计时器" — user-declared "I just rested, start the work
+        // timer now". Distinct from the pause toggle (which freezes
+        // detection) and the work/rest threshold submenus (which only
+        // change future thresholds). Sits above the pause toggle so
+        // the user's "I'm starting work" intent is closest to the
+        // top-level action.
+        let resetItem = NSMenuItem(
+            title: "重置计时器",
+            action: #selector(manualReset(_:)),
+            keyEquivalent: ""
+        )
+        resetItem.target = self
+        menu.addItem(resetItem)
+
         // Pause / resume (pure toggle, no auto-resume). Title flips
         // based on `config.isPaused`; we cache the item so
         // `menuNeedsUpdate` can keep the label current regardless of
@@ -140,6 +154,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let mainWindow: MainWindowController?
     private let timerProvider: () -> (work: TimeInterval, rest: TimeInterval)
     private let onRestart: () -> Void
+    private let onManualReset: () -> Void
     private let onCheckForUpdates: () -> Void
     private let onOpenSource: () -> Void
     let statusItem: NSStatusItem
@@ -174,12 +189,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
          mainWindow: MainWindowController? = nil,
          timerProvider: @escaping () -> (work: TimeInterval, rest: TimeInterval) = { (0, 0) },
          onRestart: @escaping () -> Void = {},
+         onManualReset: @escaping () -> Void = {},
          onCheckForUpdates: @escaping () -> Void = {},
          onOpenSource: @escaping () -> Void = {}) {
         self.config = config
         self.mainWindow = mainWindow
         self.timerProvider = timerProvider
         self.onRestart = onRestart
+        self.onManualReset = onManualReset
         self.onCheckForUpdates = onCheckForUpdates
         self.onOpenSource = onOpenSource
         // Icon-only items use `squareLength`; `variableLength` collapses to
@@ -338,6 +355,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc private func togglePause(_ sender: NSMenuItem) {
         config.togglePause()
+    }
+
+    @objc private func manualReset(_ sender: NSMenuItem) {
+        onManualReset()
     }
 
     @objc private func quitApp(_ sender: NSMenuItem) {

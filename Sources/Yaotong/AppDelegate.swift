@@ -72,6 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onRestart: { [weak self] in
                 self?.restartApp()
             },
+            onManualReset: { [weak self] in
+                self?.manualReset()
+            },
             onCheckForUpdates: { [weak self] in
                 self?.runUpdateCheck(source: .manual)
             },
@@ -94,6 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onRestart: { [weak self] in
                 self?.restartApp()
+            },
+            onManualReset: { [weak self] in
+                self?.manualReset()
             },
             onCheckForUpdates: { [weak self] in
                 self?.runUpdateCheck(source: .manual)
@@ -226,6 +232,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    String(describing: error))
         }
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Manual reset (重置计时器)
+
+    /// Wired to the "重置计时器" button in both the main window and
+    /// the status bar menu. Drops both counters to 0 and clears the
+    /// post-rest gate, so the very next tick begins accumulating work
+    /// from 0 — the user has declared "I'm working now" and we trust
+    /// that. Distinct from `handleSleepWake` (which keeps the gate
+    /// engaged because the system has no way to know the user is
+    /// present).
+    func manualReset() {
+        stateMachine.startFreshSession()
+        // Publish immediately so the SwiftUI view and status-bar
+        // menu (if open) reflect the new zero counters within the
+        // same run-loop turn, not on the next 1Hz tick.
+        appState.workDurationSeconds = stateMachine.workTime
+        appState.restDurationSeconds = stateMachine.restTime
+        // startFreshSession zeros workTime, so the icon is always
+        // .working here. We still call setState (rather than
+        // skipping it) so any in-flight overtime flash timer is
+        // cancelled and the icon reverts to the white template
+        // image — important when the user is resetting out of an
+        // overtime state.
+        statusBar.setState(.working)
+        os_log("重置计时器：用户主动开始新工作会话",
+               log: activityLog, type: .default)
     }
 
     // MARK: - Update check

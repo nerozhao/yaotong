@@ -45,7 +45,7 @@ AppDelegate  ──┬─► ConfigStore (UserDefaults, ObservableObject)
 Sources/Yaotong/
 ├── AppDelegate.swift            NSApplicationDelegate + 1Hz tick + 启动装配
 ├── ConfigStore.swift            UserDefaults 包装, ObservableObject
-├── StateMachine.swift           两个独立计时器 + waitingForActivity 门
+├── StateMachine.swift           两个独立计时器 + waitingForActivity 门 + startFreshSession()（用户主动重置，不挂门） + handleSleepWake()（系统休眠唤醒，挂门）
 ├── ActivityMonitor.swift        CGEventSource 包装, sample() 返回 idle
 ├── StatusBarController.swift    NSStatusItem + NSMenu + 缓存 SF Symbol
 ├── AppState.swift               work/rest 时长 + 阈值 (4 个 @Published)
@@ -148,6 +148,20 @@ func setState(_ state: StatusState, animated: Bool = true) {
 #### 4.3.1 系统休眠 / 唤醒
 
 `StateMachine.handleSleepWake()` 把"系统睡过了"当成"已充分休息"事件：`workTime = 0`、`restTime = 0`、挂上"等待活动"门、`lastEvent = .workSessionReset(idleSeconds: 0)`。下一次活动 tick 释放门，再下 tick 工作才重新累加。逻辑跟用户离开工位休息 10+ 分钟触发的 reset 完全一致——**长睡 = 长休息**。
+
+#### 4.3.2 用户主动重置（"重置计时器"按钮）
+
+`StateMachine.startFreshSession()` 是用户**在场**时主动宣告"我休息好了，开始工作"的入口——与 `handleSleepWake` 形成对照：
+
+- **不**挂"等待活动"门：用户正在操作菜单/主界面，他们就在电脑前，不需要等下一次输入
+- **不**发 `workSessionReset` 事件（`lastEvent = .none`）——避免触发 `Notifier.clearDelivered()` 把超时通知清掉。下一个 tick 自然走 `0 → 1` 路径 emit `workSessionStarted`
+- `workTime = 0` + `restTime = 0`——下一个 tick 立刻从 0 开始累加，不存在 `handleSleepWake` 那种"等下一次活动才释放"的延迟
+
+`AppDelegate.manualReset()` 调 `stateMachine.startFreshSession()`，**同步**把 `appState` 两个 `@Published` 写 0、`statusBar.setState(.working)` 取消可能的超时闪烁——避免用户等下一个 1Hz tick 才看到刷新。`os_log` 写一条 `重置计时器：用户主动开始新工作会话`，便于控制台.app 追溯。
+
+**为什么不复用 `handleSleepWake`**：两者的**外可观测行为**（`lastEvent`）不同——`handleSleepWake` emit `workSessionReset` 触发的"清通知"行为对手动重置是错的（用户从未休息够 10 分钟，不应该把超时通知当"已处理"清掉）。命名上也对不上：`handleSleepWake` 字面意思是"系统休眠唤醒"。
+
+`MainView` 的重置按钮在暂停时 `.disabled(!running)`——暂停态下两个计时器本就冻结在 0，重置是空操作，禁掉更明确。
 
 `AppDelegate` 在 `tick()` 里做墙钟 gap 检测：持 `lastTickWallTime: Date?`，每次 tick 算 `gap = now - last`。`gap > 2.0s` → `os_log` + `handleSleepWake()`。阈值取 2s 是因为：1s timer + 0.1s tolerance + 调度抖动 ≤ 1.5s，2s 留出裕度过滤掉正常 jitter。
 
@@ -331,6 +345,7 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 集成测试
 - **休眠 / 唤醒处理**：`StateMachine.handleSleepWake()` 把"系统睡过了"当"已充分休息"——`workTime = 0` + 挂等待活动门，**状态机返回 `.rested` 让图标立刻变蓝**。`AppDelegate` 用 wall-clock gap（>2s）+ `NSWorkspace.didWakeNotification` 双路检测，互为兜底
 - **版本检查**：`UpdateChecker`（async 网络 + semver + `skippedVersion` 持久化）+ `UpdatePrompt`（NSAlert 渲染）。启动 5s 后后台静默检查（无节流——GitHub 未鉴权 60 req/h/IP 远高于单用户启动频率），仅在发现新版本时弹窗。菜单/主界面手动点击走完整结果（每次都打网络）。默认查 GitHub Releases API，`YT_UPDATE_REPO=owner/repo` 环境变量覆盖
 - **系统消息推送**：`Notifier`（`UNUserNotificationCenter` 包装）——工作计时到达阈值时弹"腰痛提醒"通知，**`notifyOvertime` 内部先 `removeAllDeliveredNotifications` 再 `add`**，结构上保证通知中心最多只有一条；休息判定命中时（`workSessionReset`）也清一次让用户得到"我做了该做的事"的反馈。这两个事件就是通知的全部入口。启动请求通知授权；不监听 `didWakeNotification`、不响应阈值变化、不在休眠/唤醒路径清通知。状态机保持纯函数，事件 → 通知的映射在 `AppDelegate.tick()` 完成。
+- **手动重置（"重置计时器"）**：`StateMachine.startFreshSession()`——用户**在场**主动重置入口，清 0 工作/休息计时、**不**挂"等待活动"门、**不**发 `workSessionReset` 事件（避免误清超时通知，下一 tick 自然走 `0→1` emit `workSessionStarted`）。与 `handleSleepWake` 形成对照：后者挂门等下一次输入（系统认为"用户不在"），前者不挂门立即累加（用户主动宣告"我工作"）。`AppDelegate.manualReset()` 同步推 `appState` 两个 `@Published` + `statusBar.setState(.working)` 取消超时闪烁 + `os_log` 写一条；主界面"状态"区"停止腰痛"前 + 菜单栏"停止腰痛"前都加"重置计时器"项，主界面按钮暂停时 `.disabled(!running)`。`SmokeTest` 增 9 个新断言覆盖清零 / 不挂门 / 救援路径（从 `waitingForActivity` 门内释放）。
 
 **已移除（多余设计）**
 - 调试面板（`DebugView` / `DebugWindowController` / `LogStore`）

@@ -11,17 +11,20 @@ final class MainWindowController {
     private let config: ConfigStore
     private let appState: AppState
     private let onRestart: () -> Void
+    private let onManualReset: () -> Void
     private let onCheckForUpdates: () -> Void
     private let onOpenSource: () -> Void
 
     init(config: ConfigStore,
          appState: AppState,
          onRestart: @escaping () -> Void = {},
+         onManualReset: @escaping () -> Void = {},
          onCheckForUpdates: @escaping () -> Void = {},
          onOpenSource: @escaping () -> Void = {}) {
         self.config = config
         self.appState = appState
         self.onRestart = onRestart
+        self.onManualReset = onManualReset
         self.onCheckForUpdates = onCheckForUpdates
         self.onOpenSource = onOpenSource
     }
@@ -41,6 +44,7 @@ final class MainWindowController {
                 NSApp.terminate(nil)
             },
             onRestart: onRestart,
+            onManualReset: onManualReset,
             onCheckForUpdates: onCheckForUpdates,
             onOpenSource: onOpenSource
         )

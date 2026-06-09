@@ -465,6 +465,86 @@ enum SmokeTest {
             sm.workTime == 1
         )
 
+        // ---- §6.3: 「重置计时器」按钮
+        // The "重置计时器" button drops both counters to 0 and does
+        // NOT engage the post-rest gate. Distinct from handleSleepWake:
+        // the user is at the keyboard, so work begins accumulating
+        // immediately on the next tick.
+        config.isPaused = false
+        sm = StateMachine(workMinutes: 30, restMinutes: 10)
+        // Build up 20 minutes of active work.
+        for i in 0..<(20 * 60) {
+            _ = sm.tick(
+                now: Date(timeIntervalSince1970: 4_000_000 + TimeInterval(i)),
+                idleSeconds: 0,
+                isPaused: false
+            )
+        }
+        check(
+            "manual reset precondition: 20 min active work is reflected in workTime",
+            sm.workTime == 20 * 60
+        )
+        // User clicks the button.
+        sm.startFreshSession()
+        check(
+            "manual reset: startFreshSession zeros workTime",
+            sm.workTime == 0
+        )
+        check(
+            "manual reset: startFreshSession zeros restTime",
+            sm.restTime == 0
+        )
+        check(
+            "manual reset: startFreshSession does NOT engage the gate",
+            !sm.waitingForActivity
+        )
+        // The next tick begins accumulating immediately — no wait-for-activity.
+        let t1 = Date(timeIntervalSince1970: 4_000_000 + 20 * 60)
+        let s1 = sm.tick(now: t1, idleSeconds: 0, isPaused: false)
+        check(
+            "manual reset: next active tick returns .working",
+            s1 == .working
+        )
+        check(
+            "manual reset: next active tick increments workTime",
+            sm.workTime == 1
+        )
+
+        // Also verify the rescue path: from inside a waitingForActivity
+        // gate, startFreshSession releases it.
+        sm = StateMachine(workMinutes: 30, restMinutes: 10)
+        for i in 0..<(31 * 60) {
+            _ = sm.tick(
+                now: Date(timeIntervalSince1970: 5_000_000 + TimeInterval(i)),
+                idleSeconds: 0,
+                isPaused: false
+            )
+        }
+        let sGate = sm.tick(
+            now: Date(timeIntervalSince1970: 5_000_000 + 31 * 60 + 11 * 60),
+            idleSeconds: 11 * 60,
+            isPaused: false
+        )
+        check(
+            "manual reset rescue path: rest crossed threshold engages gate",
+            sGate == .rested && sm.waitingForActivity
+        )
+        sm.startFreshSession()
+        check(
+            "manual reset rescue path: startFreshSession releases the gate",
+            !sm.waitingForActivity && sm.workTime == 0
+        )
+        // And the next active tick starts work without a wait-for-activity gap.
+        let sRescue = sm.tick(
+            now: Date(timeIntervalSince1970: 5_000_000 + 31 * 60 + 12 * 60),
+            idleSeconds: 0,
+            isPaused: false
+        )
+        check(
+            "manual reset rescue path: next active tick begins work immediately",
+            sRescue == .working && sm.workTime == 1
+        )
+
         // ---- §6.3: "退出 腰痛"后菜单栏图标消失
         // The NSStatusItem is owned by the NSStatusBar; the system releases
         // it when the owning process terminates (and when no other code

@@ -309,4 +309,99 @@ final class StateMachineTests: XCTestCase {
         )
         XCTAssertEqual(sm.workTime, 1)
     }
+
+    // MARK: - Manual reset (重置计时器 button)
+
+    /// The "重置计时器" button drops both counters to 0 and does NOT
+    /// engage the post-rest gate — the user is at the keyboard when
+    /// they click, so the next tick should start accumulating work
+    /// immediately. This is the key difference from `handleSleepWake`.
+    func testStartFreshSessionResetsCounters() {
+        let sm = StateMachine(workMinutes: 30, restMinutes: 10)
+        let t0 = Date(timeIntervalSince1970: 0)
+        // Get into a "deep work" state: 20 min active, then 5 min idle
+        // (below rest threshold, so no gate engagement).
+        for i in 0..<(20 * 60) {
+            _ = sm.tick(now: t0.addingTimeInterval(TimeInterval(i)), idleSeconds: 0, isPaused: false)
+        }
+        for i in 0..<(5 * 60) {
+            _ = sm.tick(
+                now: t0.addingTimeInterval(TimeInterval(20 * 60 + i)),
+                idleSeconds: TimeInterval(i + 1),
+                isPaused: false
+            )
+        }
+        XCTAssertEqual(sm.workTime, 25 * 60)
+        XCTAssertEqual(sm.restTime, 5 * 60)
+        XCTAssertFalse(sm.waitingForActivity)
+
+        // User clicks the reset button.
+        sm.startFreshSession()
+
+        XCTAssertEqual(sm.workTime, 0)
+        XCTAssertEqual(sm.restTime, 0)
+        // Gate must NOT be engaged — the user is at the keyboard.
+        XCTAssertFalse(sm.waitingForActivity)
+        // No event emitted by the reset itself; the next active tick
+        // will naturally fire `workSessionStarted` on the 0 → 1
+        // transition.
+        XCTAssertEqual(sm.lastEvent, .none)
+    }
+
+    /// After `startFreshSession`, the next active tick begins
+    /// accumulating workTime immediately — no wait-for-activity gap.
+    /// This is the whole point of the button: the user is saying
+    /// "I'm working now", so the wall clock starts at 0 right away.
+    func testStartFreshSessionStartsWorkOnNextTick() {
+        let sm = StateMachine(workMinutes: 30, restMinutes: 10)
+        let t0 = Date(timeIntervalSince1970: 0)
+        // Get into overtime first so the reset has something to clear.
+        for i in 0..<(31 * 60) {
+            _ = sm.tick(now: t0.addingTimeInterval(TimeInterval(i)), idleSeconds: 0, isPaused: false)
+        }
+        XCTAssertEqual(sm.workTime, 31 * 60)
+
+        sm.startFreshSession()
+        XCTAssertEqual(sm.workTime, 0)
+
+        // First active tick after reset: workTime is 0, state is
+        // .working, no gate.
+        let t1 = t0.addingTimeInterval(31 * 60)
+        let s1 = sm.tick(now: t1, idleSeconds: 0, isPaused: false)
+        XCTAssertEqual(s1, .working)
+        XCTAssertEqual(sm.workTime, 1)
+        XCTAssertEqual(sm.lastEvent, .workSessionStarted)
+    }
+
+    /// `startFreshSession` from inside a `waitingForActivity` gate
+    /// must release the gate. This is the rescue path: the user has
+    /// been idle long enough that rest reset fired, the icon is blue,
+    /// they come back and click the button — now they want to work,
+    /// not wait for the system's "next input" heuristic.
+    func testStartFreshSessionReleasesPostRestGate() {
+        let sm = StateMachine(workMinutes: 30, restMinutes: 10)
+        let t0 = Date(timeIntervalSince1970: 0)
+        // Work, then rest long enough to engage the gate.
+        for i in 0..<(31 * 60) {
+            _ = sm.tick(now: t0.addingTimeInterval(TimeInterval(i)), idleSeconds: 0, isPaused: false)
+        }
+        let after = sm.tick(
+            now: t0.addingTimeInterval(TimeInterval(31 * 60 + 11 * 60)),
+            idleSeconds: 11 * 60,
+            isPaused: false
+        )
+        XCTAssertEqual(after, .rested)
+        XCTAssertTrue(sm.waitingForActivity)
+
+        // User clicks reset.
+        sm.startFreshSession()
+        XCTAssertFalse(sm.waitingForActivity)
+        XCTAssertEqual(sm.workTime, 0)
+
+        // Next active tick — work begins, no wait-for-activity gap.
+        let t1 = t0.addingTimeInterval(TimeInterval(31 * 60 + 12 * 60))
+        let s1 = sm.tick(now: t1, idleSeconds: 0, isPaused: false)
+        XCTAssertEqual(s1, .working)
+        XCTAssertEqual(sm.workTime, 1)
+    }
 }
