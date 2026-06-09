@@ -4,10 +4,10 @@ import Foundation
 /// Mirrors the keys in `Resources/Info.plist`; keep them in sync when
 /// bumping.
 enum AppVersion {
-    /// `CFBundleShortVersionString` — user-facing "0.3.5" string.
-    static let short: String = "0.3.5"
+    /// `CFBundleShortVersionString` — user-facing "0.3.7" string.
+    static let short: String = "0.3.7"
     /// `CFBundleVersion` — monotonically increasing build number.
-    static let build: String = "8"
+    static let build: String = "10"
 
     /// ISO-8601 UTC timestamp written by `build.sh` on every build
     /// (custom `YTBuildTime` key in Info.plist). Falls back to
