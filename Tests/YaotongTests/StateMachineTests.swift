@@ -164,6 +164,66 @@ final class StateMachineTests: XCTestCase {
         XCTAssertEqual(sm.workTime, 1)
     }
 
+    /// Regression for the lock-screen synthetic-input bug. The lock
+    /// screen UI can post input events (animations, cursor moves)
+    /// that keep `idleSeconds < 1.0` while the user is actually
+    /// away — `wasActive` stays true, and any prior reset gets
+    /// immediately overwritten by `workTime += 1`. The fix is for
+    /// `AppDelegate` to also listen to `com.apple.screenIsUnlocked`
+    /// and re-fire `handleSleepWake` on unlock (the authoritative
+    /// "user is back" boundary). This test pins the state-machine
+    /// contract that handler depends on: calling `handleSleepWake`
+    /// twice in a row is idempotent, idle ticks between the two
+    /// calls must not advance work, and the first active tick after
+    /// the second call returns workTime=0.
+    func testHandleSleepWakeIsIdempotentAcrossLockUnlockCycle() {
+        let sm = StateMachine(workMinutes: 30, restMinutes: 10)
+        let t0 = Date(timeIntervalSince1970: 0)
+        // Lock event arrives — state machine resets.
+        sm.handleSleepWake()
+        XCTAssertEqual(sm.workTime, 0)
+        XCTAssertTrue(sm.waitingForActivity)
+        // 30 seconds of idle ticks while locked (idleSeconds rising).
+        // The post-rest gate must hold: work stays at 0 even if the
+        // user comes back and reports `wasActive == true` mid-cycle.
+        for i in 0..<30 {
+            let state = sm.tick(
+                now: t0.addingTimeInterval(TimeInterval(i)),
+                idleSeconds: TimeInterval(i + 1),
+                isPaused: false
+            )
+            XCTAssertEqual(state, .rested)
+            XCTAssertEqual(sm.workTime, 0, "idle ticks while locked must not advance work")
+            XCTAssertTrue(sm.waitingForActivity)
+        }
+        // Unlock event arrives — same handler, idempotent. Work
+        // stays at 0 and the gate stays engaged. A subsequent
+        // active tick is what releases the gate.
+        sm.handleSleepWake()
+        XCTAssertEqual(sm.workTime, 0)
+        XCTAssertTrue(sm.waitingForActivity)
+        // First active tick after unlock — gate releases, work
+        // still 0 (the "I just noticed you" tick, not a full
+        // second of work yet).
+        _ = sm.tick(
+            now: t0.addingTimeInterval(31),
+            idleSeconds: 0,
+            isPaused: false
+        )
+        XCTAssertEqual(sm.workTime, 0)
+        XCTAssertFalse(sm.waitingForActivity)
+        // Next active tick — work begins from 0. This is the
+        // user-observable invariant the bug report violated: a
+        // 30-second lock window must NOT produce a 30-second
+        // work counter on unlock.
+        _ = sm.tick(
+            now: t0.addingTimeInterval(32),
+            idleSeconds: 0,
+            isPaused: false
+        )
+        XCTAssertEqual(sm.workTime, 1)
+    }
+
     // MARK: - Events
 
     func testFirstActiveTickEmitsWorkSessionStarted() {

@@ -30,7 +30,7 @@
 | 滚轮滚动 | 上下/左右滚动 |
 | 触摸板手势 | 多指滑动、捏合等 |
 
-> 屏幕关闭 / 系统休眠 = 用户已离开工位，被视为**已充分休息**。检测方式：wall-clock gap（两次 tick 间隔 >2s）+ `NSWorkspace.didWakeNotification` 双路并用，互为兜底。唤醒后工作计时清 0 + 挂"等待活动"门——必须**下一次输入**才重新开始计时。
+> 屏幕关闭 / 系统休眠 = 用户已离开工位，被视为**已充分休息**。检测方式：监听 Darwin distributed notification `com.apple.screenIsLocked` **和** `com.apple.screenIsUnlocked`（WindowServer 在锁屏瞬间 post，比 `didWake` 更直接、不依赖电源事件）。锁屏触发：工作计时清 0 + 挂"等待活动"门；解锁触发：再次调用同一处理路径（幂等），确保锁屏 UI 的合成输入事件（动画、光标移动）没有错误地释放门——必须**下一次输入**才重新开始计时。两个事件共享 1s 去重窗口。
 
 ### 2.2 工作 / 休息判定逻辑
 
@@ -47,8 +47,9 @@
 | **等待活动** | 处于该状态时，**工作计时一直保持为 0**，不论墙钟过了多久；只有用户**下一次输入**（鼠标/键盘）才释放门，**下一 tick** 重新开始累加。 |
 | **超时判定** | 工作计时达到阈值（默认 30 分钟）→ 进入"超时"状态，菜单栏图标变红。 |
 | **手动重置** | 用户点击「重置计时器」→ 工作计时清 0、休息计时清 0、**不**挂"等待活动"门，**下一个 tick 立刻**从 0 开始累加。语义：用户主动宣告"我休息完了、开始工作"，墙钟即起。 |
+| **锁屏/解锁触发** | 监听 `com.apple.screenIsLocked` 和 `com.apple.screenIsUnlocked`——两者均视为"已充分休息"，工作计时清 0 + 挂"等待活动"门。两个事件都走同一个幂等处理路径（共用 1s 去重窗口），避免锁屏 UI 自身的合成输入事件误把门释放。解锁是"用户是否真的回来"的权威边界，必须**下一次输入**才重新开始计时。 |
 
-> 一句话总结：工作计时是**墙钟**（鼠标不动也累加），但休息判定命中后会被**暂停**（工作清 0 + 挂等待门），等用户回来才继续。
+> 一句话总结：工作计时是**墙钟**（鼠标不动也累加），但休息判定命中后会被**暂停**（工作清 0 + 挂等待门），等用户回来才继续。锁屏 / 解锁也按同一规则处理：触发即重置 + 挂门，等用户输入才释放。
 
 ### 2.3 信号采集方案 ✅ 极简
 
@@ -293,12 +294,14 @@ log show --predicate 'subsystem == "local.yaotong"' --info --last 5m
 | 23 | 菜单无 emoji | ✅ 做（去掉 🪟 / 🔄 / ⏸ / ▶ / 🚪，系统字体下与中文标签不协调） |
 | 24 | 休息时长 2 分钟档 | ✅ 做（菜单 + Picker 都有 2 分钟选项） |
 | 25 | Dock 图标 | ✅ 做（蓝色填充圆，构建时生成 PNG 烧进 bundle） |
-| 26 | 休眠 / 唤醒 | ✅ 做（wall-clock gap + `didWake` 双路，sleep = 休息，唤醒后等输入） |
+| 26 | 休眠 / 唤醒 | ✅ 做（同时监听 `com.apple.screenIsLocked` 和 `com.apple.screenIsUnlocked`，两个事件都触发 `handleSleepWake`——sleep/unlock 都视为"已充分休息"，挂等待活动门等下一次输入才释放。两个事件共用 1s 去重窗口，因为锁屏 UI 自身的合成输入事件会让 `idleSeconds` 短暂低于 1s，错误地释放门；把 unlock 也纳入权威边界能保证锁屏期间工作计时不会被累加。`handleSleepWake` 幂等，所以重复调用无副作用） |
 | 27 | 版本检查 | ✅ 做（GitHub Releases API，后台静默 + 手动弹窗，**无节流**——60 req/h/IP 远高于单用户启动频率） |
 | 28 | 等待活动图标 | ✅ 做（休息判定命中后变蓝，用户下一次输入变白——比白色更明显地区分"被重置"和"正常工作"） |
 | 29 | 超时闪烁提醒 | ✅ 做（变红瞬间闪 3 下再稳定——0.18s × 5 步，不弹窗不发声，靠视觉锚定阈值点） |
 | 30 | 系统消息推送 | ✅ 做（工作超时通知 + **提醒前清理** + 休息判定命中时清通知；`UNUserNotificationCenter`；启动请求授权；不响应休眠/唤醒/阈值变更） |
 | 31 | 手动重置按钮 | ✅ 做（"重置计时器"，主界面 + 菜单栏都有；清 0 工作/休息计时、**不**挂"等待活动"门，下一 tick 立即累加；与"系统休眠唤醒"区分开——用户主动操作 = 用户在场） |
+| 32 | 休眠检测路径 | ✅ 简化为 Darwin distributed notification 监听（之前描述的"wall-clock gap + didWake 双路"取消——wall-clock gap 覆盖不到锁屏但系统进程仍在跑的情况，分布式通知正好补上，简化逻辑）。**后续修订**：从仅 `com.apple.screenIsLocked` 扩展到同时监听 `com.apple.screenIsUnlocked`——见决策 33 |
+| 33 | 锁屏合成事件 | ✅ 同时监听 `com.apple.screenIsUnlocked`。锁屏 UI 自身的合成输入事件（动画、光标移动）会让 `CGEventSource.secondsSinceLastEventType` 短暂低于 1.0，从而被状态机的 `wasActive` 误判为"用户活动"、释放等待门、累加工作计时——复现：用户锁屏 30s 后解锁，工作计时已涨到 30s。修复：把 unlock 也当作"重置 + 挂门"事件（与 lock 同一个幂等处理路径，1s 去重共用），因为 unlock 才是"用户是否真的回来"的权威边界 |
 
 ---
 
@@ -317,3 +320,4 @@ log show --predicate 'subsystem == "local.yaotong"' --info --last 5m
 - **版本检查**：菜单 + 主界面都有"检查更新…"，启动后 5s 后台静默检查（**无节流**——GitHub 未鉴权 60 req/h/IP 远高于单用户启动频率），手动点击立即打网络并弹结果。默认查 GitHub Releases API，可被 `YT_UPDATE_REPO` 环境变量覆盖
 - **系统消息推送**：工作计时到达阈值时通过 `UNUserNotificationCenter` 弹 macOS 系统通知，**提醒前清理**——`notifyOvertime` 内部先 `removeAllDeliveredNotifications` 再 `add`，结构上保证通知中心最多只有一条；休息判定命中时（`workSessionReset`）也清一次。这两个事件就是通知的全部入口——不响应休眠/唤醒/阈值变更/启动
 - **手动重置**：`StateMachine.startFreshSession()`（用户**在场**时主动重置——清 0 工作/休息计时、**不**挂"等待活动"门、**不**发 `workSessionReset` 事件避免误清超时通知，下一 tick 自然走 `0→1` emit `workSessionStarted`）+ `AppDelegate.manualReset()`（同步推 `appState` + `statusBar.setState(.working)` 取消可能的闪烁）。**主界面**"状态"区"停止腰痛"按钮前 + **菜单栏**"停止腰痛"前都加"重置计时器"项；主界面按钮暂停时 `.disabled`。**与** `handleSleepWake` 形成对照——后者是系统认为"用户不在"，挂门等下一次输入；前者是用户主动宣告"我工作"，不挂门立即累加
+- **锁屏 unlock 监听**：`AppDelegate` 在 `applicationDidFinishLaunching` 同时注册 `com.apple.screenIsLocked` 和 `com.apple.screenIsUnlocked` 两个观察者，都指向同一个 `@objc handleScreensaverStarted(_:)` 回调——`handleSleepWake` 幂等，重复调用无副作用。修复锁屏 UI 合成输入事件导致"用户锁屏 30s、解锁后工作计时已涨到 30s"的 bug：unlock 是"用户是否真的回来"的权威边界，重新挂门等下一次输入才释放（修复细节见决策 26、决策 33）

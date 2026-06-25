@@ -26,6 +26,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindow: MainWindowController!
     private let updateChecker = UpdateChecker()
     private var notifier: Notifier!
+    /// Wall-clock timestamp of the most recent screen-lock or
+    /// screen-unlock distributed notification. Used as a debounce so
+    /// a flurry of lock/unlock events within the same second
+    /// collapses into one `handleSleepWake()` call — the state
+    /// machine is idempotent, so this is defensive, not load-bearing.
+    private var lastScreensaverEventAt: Date?
 
     /// System log for activity detection — viewable in Console.app or via
     /// `log show --predicate 'subsystem == "local.yaotong"'`.
@@ -119,6 +125,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         startTicking()
+
+        // Treat system lock as a "rested" event. `com.apple.screenIsLocked`
+        // is a Darwin distributed notification posted by WindowServer
+        // the moment the lock screen engages (system-default
+        // trigger, or any time `Require password immediately` is on)
+        // — the cleanest "user stepped away" signal we have, with no
+        // power-event dependency and no timer-gap heuristics. We also
+        // listen to `com.apple.screenIsUnlocked` because the lock
+        // screen UI itself can produce synthetic input events
+        // (animations, cursor moves) that prematurely release the
+        // post-rest gate while the user is still away — unlock is
+        // the authoritative "user is back" boundary, so we treat
+        // both events as the same "reset work timer" trigger. Both
+        // funnels into one debounced handler so a lock/unlock
+        // flurry doesn't hammer the state machine.
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(handleScreensaverStarted),
+            name: NSNotification.Name("com.apple.screenIsLocked"),
+            object: nil
+        )
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(handleScreensaverStarted),
+            name: NSNotification.Name("com.apple.screenIsUnlocked"),
+            object: nil
+        )
 
         // Auto-open the main window at launch.
         DispatchQueue.main.async { [weak self] in
@@ -232,6 +265,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    String(describing: error))
         }
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Sleep / wake (锁屏)
+
+    /// Wired to both the `com.apple.screenIsLocked` and
+    /// `com.apple.screenIsUnlocked` distributed notifications.
+    /// WindowServer posts these around the lock screen lifecycle
+    /// (system-default trigger, or any time `Require password
+    /// immediately` is on) — the cleanest signal that the user has
+    /// stepped away / come back, with no power-event dependency.
+    ///
+    /// We listen to BOTH events (not just lock) because the lock
+    /// screen UI itself can produce synthetic input events
+    /// (animations, cursor moves) that prematurely release the
+    /// post-rest gate while the user is still away. Treating unlock
+    /// as another "reset work timer" trigger is idempotent — if the
+    /// gate is already engaged, `handleSleepWake` simply re-arms it;
+    /// if the user actually came back, the next tick's active signal
+    /// will release the gate as usual. The `workSessionReset` event
+    /// that falls out of `handleSleepWake` flows through the same
+    /// `tick()` switch and clears any pending overtime notification.
+    @objc private func handleScreensaverStarted(_ notification: Notification) {
+        // Debounce: a flurry of lock/unlock transitions within the
+        // same second collapses into one call. `handleSleepWake` is
+        // idempotent so this is defensive, not load-bearing.
+        let now = Date()
+        if let last = lastScreensaverEventAt, now.timeIntervalSince(last) < 1.0 {
+            return
+        }
+        lastScreensaverEventAt = now
+        // `stateMachine` is @MainActor; the observer fires on the
+        // main queue already, but the explicit `assumeIsolated`
+        // mirrors `tick()`'s pattern and keeps Swift 6 strict
+        // concurrency happy.
+        MainActor.assumeIsolated {
+            stateMachine.handleSleepWake()
+            os_log("锁屏触发：已重置工作计时器，等待下一次活动",
+                   log: activityLog, type: .default)
+        }
     }
 
     // MARK: - Manual reset (重置计时器)

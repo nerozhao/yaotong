@@ -398,10 +398,13 @@ enum SmokeTest {
 
         // ---- §6.3: 系统休眠后工作计时器清 0，唤醒后等待活动
         // This drives the StateMachine path used by AppDelegate's
-        // wall-clock-gap detector and the NSWorkspace.didWake observer:
-        // a system sleep is treated as a "rested" event. The work counter
-        // must reset and the post-rest gate must engage — work only
-        // resumes after the next active tick.
+        // com.apple.screenIsLocked distributed-notification observer:
+        // a system lock is treated as a "rested" event. The work
+        // counter must reset and the post-rest gate must engage —
+        // work only resumes after the next active tick. The handler
+        // wiring (observer registration + MainActor.assumeIsolated
+        // dispatch) lives in AppDelegate; here we exercise the
+        // state-machine contract that handler depends on.
         config.isPaused = false
         sm = StateMachine(workMinutes: 30, restMinutes: 10)
         // Run 20 minutes of active work — comfortably below the threshold.

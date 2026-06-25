@@ -149,6 +149,10 @@ func setState(_ state: StatusState, animated: Bool = true) {
 
 `StateMachine.handleSleepWake()` 把"系统睡过了"当成"已充分休息"事件：`workTime = 0`、`restTime = 0`、挂上"等待活动"门、`lastEvent = .workSessionReset(idleSeconds: 0)`。下一次活动 tick 释放门，再下 tick 工作才重新累加。逻辑跟用户离开工位休息 10+ 分钟触发的 reset 完全一致——**长睡 = 长休息**。
 
+**触发源**：`AppDelegate.applicationDidFinishLaunching` 在 1Hz tick 之外另起两个 `DistributedNotificationCenter` 观察者，监听 `com.apple.screenIsLocked` **和** `com.apple.screenIsUnlocked`（WindowServer 在锁屏生命周期里 post 的 Darwin distributed notification），都指向同一个 `@objc handleScreensaverStarted(_:)` 回调。两个事件都触发 `handleSleepWake`，因为锁屏 UI 自身会产生合成输入事件（动画、光标移动）让 `CGEventSource.secondsSinceLastEventType` 短暂低于 1.0，被状态机的 `wasActive` 误判为"用户活动"、释放等待门、累加工作计时——这是用户报告的 bug：锁屏 30s 后解锁，工作计时已涨到 30s。unlock 才是"用户是否真的回来"的权威边界，把 unlock 也当作"重置 + 挂门"事件能保证锁屏期间工作计时不会被累加。`handleSleepWake` 幂等，所以同一回调服务两个事件没有副作用。回调里按 `lastScreensaverEventAt` 做 1s 内去重（lock/unlock 在快速切换时可能多次 post，但状态机本身幂等，所以这条是防御性的），通过 `MainActor.assumeIsolated { stateMachine.handleSleepWake() }` 派发到主 actor，最后 `os_log` 写一条"锁屏触发：已重置工作计时器，等待下一次活动"。
+
+之前描述的"wall-clock gap（>2s）+ `NSWorkspace.didWakeNotification` 双路并用"在 §2.1 已弃用——wall-clock gap 兜不住锁屏后系统进程仍在跑的情况，Darwin distributed notification 语义更直接，逻辑更少。`NSWorkspace` 本身没有公开 `screensaverDidStartNotification` 常量（只有 `ScreensDidSleep` / `ScreensDidWake` / `WillSleep` / `DidWake`），而锁屏才是"用户离开工位"的最干净信号，所以走 Darwin distributed notification 而不是 `NSWorkspace.shared.notificationCenter`。
+
 #### 4.3.2 用户主动重置（"重置计时器"按钮）
 
 `StateMachine.startFreshSession()` 是用户**在场**时主动宣告"我休息好了，开始工作"的入口——与 `handleSleepWake` 形成对照：
@@ -162,10 +166,6 @@ func setState(_ state: StatusState, animated: Bool = true) {
 **为什么不复用 `handleSleepWake`**：两者的**外可观测行为**（`lastEvent`）不同——`handleSleepWake` emit `workSessionReset` 触发的"清通知"行为对手动重置是错的（用户从未休息够 10 分钟，不应该把超时通知当"已处理"清掉）。命名上也对不上：`handleSleepWake` 字面意思是"系统休眠唤醒"。
 
 `MainView` 的重置按钮在暂停时 `.disabled(!running)`——暂停态下两个计时器本就冻结在 0，重置是空操作，禁掉更明确。
-
-`AppDelegate` 在 `tick()` 里做墙钟 gap 检测：持 `lastTickWallTime: Date?`，每次 tick 算 `gap = now - last`。`gap > 2.0s` → `os_log` + `handleSleepWake()`。阈值取 2s 是因为：1s timer + 0.1s tolerance + 调度抖动 ≤ 1.5s，2s 留出裕度过滤掉正常 jitter。
-
-不再监听 `NSWorkspace.didWakeNotification`——gáp 检测的覆盖面足够（本机不会 hard power event 后还能从休眠恢复到同一进程），省掉一个系统通知的 bridge。
 
 ### 4.4 主界面窗口：SwiftUI + AppKit 桥接 + Dock 联动
 
@@ -344,7 +344,7 @@ build/腰痛.app/Contents/MacOS/Yaotong --smoke-test   # 集成测试
 - **暂停不持久化**：`isPaused` 是纯内存属性，每次启动默认 `false`（运行中）
 - **休息时长选项**：`[1, 2, 5, 10, 15, 20, 30, 45, 60]` 分钟（多了 2 分钟档）
 - **活动类型日志**（12 种 CGEventType × 5s 节流）—— 移除（高频噪音，状态机事件已覆盖）
-- **休眠 / 唤醒处理**：`StateMachine.handleSleepWake()` 把"系统睡过了"当"已充分休息"——`workTime = 0` + 挂等待活动门，**状态机返回 `.rested` 让图标立刻变蓝**。`AppDelegate` 用 wall-clock gap（>2s）+ `NSWorkspace.didWakeNotification` 双路检测，互为兜底
+- **休眠 / 唤醒处理**：`StateMachine.handleSleepWake()` 把"系统睡过了"当"已充分休息"——`workTime = 0` + 挂等待活动门，**状态机返回 `.rested` 让图标立刻变蓝**。`AppDelegate` 在 `applicationDidFinishLaunching` 注册两个 Darwin distributed notification 观察者——`com.apple.screenIsLocked` **和** `com.apple.screenIsUnlocked`（`DistributedNotificationCenter.default()`）——都指向同一个 `@objc handleScreensaverStarted(_:)` 回调。锁屏 UI 自身的合成输入事件会让 `wasActive` 短暂为真、把等待门释放掉、错误地累加工作计时；把 unlock 也纳入权威边界能确保锁屏期间工作计时一定从 0 开始。回调 1s 去重（lock/unlock 切换可能多次 post，状态机幂等，防御性）、`MainActor.assumeIsolated` 派发、`os_log` 写一条"锁屏触发"。`handleSleepWake` 触发的 `workSessionReset` 事件走 `tick()` 末尾的 switch，自动清掉已交付的超时通知
 - **版本检查**：`UpdateChecker`（async 网络 + semver + `skippedVersion` 持久化）+ `UpdatePrompt`（NSAlert 渲染）。启动 5s 后后台静默检查（无节流——GitHub 未鉴权 60 req/h/IP 远高于单用户启动频率），仅在发现新版本时弹窗。菜单/主界面手动点击走完整结果（每次都打网络）。默认查 GitHub Releases API，`YT_UPDATE_REPO=owner/repo` 环境变量覆盖
 - **系统消息推送**：`Notifier`（`UNUserNotificationCenter` 包装）——工作计时到达阈值时弹"腰痛提醒"通知，**`notifyOvertime` 内部先 `removeAllDeliveredNotifications` 再 `add`**，结构上保证通知中心最多只有一条；休息判定命中时（`workSessionReset`）也清一次让用户得到"我做了该做的事"的反馈。这两个事件就是通知的全部入口。启动请求通知授权；不监听 `didWakeNotification`、不响应阈值变化、不在休眠/唤醒路径清通知。状态机保持纯函数，事件 → 通知的映射在 `AppDelegate.tick()` 完成。
 - **手动重置（"重置计时器"）**：`StateMachine.startFreshSession()`——用户**在场**主动重置入口，清 0 工作/休息计时、**不**挂"等待活动"门、**不**发 `workSessionReset` 事件（避免误清超时通知，下一 tick 自然走 `0→1` emit `workSessionStarted`）。与 `handleSleepWake` 形成对照：后者挂门等下一次输入（系统认为"用户不在"），前者不挂门立即累加（用户主动宣告"我工作"）。`AppDelegate.manualReset()` 同步推 `appState` 两个 `@Published` + `statusBar.setState(.working)` 取消超时闪烁 + `os_log` 写一条；主界面"状态"区"停止腰痛"前 + 菜单栏"停止腰痛"前都加"重置计时器"项，主界面按钮暂停时 `.disabled(!running)`。`SmokeTest` 增 9 个新断言覆盖清零 / 不挂门 / 救援路径（从 `waitingForActivity` 门内释放）。
